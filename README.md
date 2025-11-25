@@ -1,93 +1,411 @@
-# :package_description
+# Laravel PEPPOL
 
-[![Latest Version on Packagist](https://img.shields.io/packagist/v/:vendor_slug/:package_slug.svg?style=flat-square)](https://packagist.org/packages/:vendor_slug/:package_slug)
-[![GitHub Tests Action Status](https://img.shields.io/github/actions/workflow/status/:vendor_slug/:package_slug/run-tests.yml?branch=main&label=tests&style=flat-square)](https://github.com/:vendor_slug/:package_slug/actions?query=workflow%3Arun-tests+branch%3Amain)
-[![GitHub Code Style Action Status](https://img.shields.io/github/actions/workflow/status/:vendor_slug/:package_slug/fix-php-code-style-issues.yml?branch=main&label=code%20style&style=flat-square)](https://github.com/:vendor_slug/:package_slug/actions?query=workflow%3A"Fix+PHP+code+style+issues"+branch%3Amain)
-[![Total Downloads](https://img.shields.io/packagist/dt/:vendor_slug/:package_slug.svg?style=flat-square)](https://packagist.org/packages/:vendor_slug/:package_slug)
-<!--delete-->
----
-This repo can be used to scaffold a Laravel package. Follow these steps to get started:
+A flexible Laravel package for sending electronic invoices via the PEPPOL network with support for multiple connectors.
 
-1. Press the "Use this template" button at the top of this repo to create a new repo with the contents of this skeleton.
-2. Run "php ./configure.php" to run a script that will replace all placeholders throughout all the files.
-3. Have fun creating your package.
-4. If you need help creating a package, consider picking up our <a href="https://laravelpackage.training">Laravel Package Training</a> video course.
----
-<!--/delete-->
-This is where your description should go. Limit it to a paragraph or two. Consider adding a small example.
+> **📖 NEW TO THIS PACKAGE?** Start with the [Getting Started Guide](GETTING_STARTED.md) for a complete step-by-step setup tutorial!
 
-## Support us
+## Features
 
-[<img src="https://github-ads.s3.eu-central-1.amazonaws.com/:package_name.jpg?t=1" width="419px" />](https://spatie.be/github-ad-click/:package_name)
+- **Send Invoices via PEPPOL**: Reliably dispatch invoices to any company on the PEPPOL network
+- **Connector Architecture**: Swap between different PEPPOL service providers with ease
+- **Default Scrada Integration**: Out-of-the-box integration with Scrada's PEPPOL API
+- **Automatic Company Lookups**: Cache and validate PEPPOL participant status
+- **Scheduled Dispatch**: Configure delayed invoice sending (e.g., 7 days after creation)
+- **Status Tracking**: Complete audit trail of invoice lifecycle with polling support
+- **Event-Driven**: Extensible through Laravel events
+- **Polymorphic Design**: Works with any invoice model in your application
 
-We invest a lot of resources into creating [best in class open source packages](https://spatie.be/open-source). You can support us by [buying one of our paid products](https://spatie.be/open-source/support-us).
+> **Note:** This package is currently designed for **sending invoices only**. Receiving invoices is not supported by the Scrada connector.
 
-We highly appreciate you sending us a postcard from your hometown, mentioning which of our package(s) you are using. You'll find our address on [our contact page](https://spatie.be/about-us). We publish all received postcards on [our virtual postcard wall](https://spatie.be/open-source/postcards).
+## Requirements
+
+- PHP 8.3+
+- Laravel 10.x, 11.x, or 12.x
 
 ## Installation
 
-You can install the package via composer:
+Install the package via Composer:
 
 ```bash
-composer require :vendor_slug/:package_slug
+composer require deinte/laravel-peppol
 ```
 
-You can publish and run the migrations with:
+Publish and run the migrations:
 
 ```bash
-php artisan vendor:publish --tag=":package_slug-migrations"
+php artisan vendor:publish --tag="peppol-migrations"
 php artisan migrate
 ```
 
-You can publish the config file with:
+Publish the config file:
 
 ```bash
-php artisan vendor:publish --tag=":package_slug-config"
+php artisan vendor:publish --tag="peppol-config"
 ```
 
-This is the contents of the published config file:
+## Configuration
+
+Add your Scrada credentials to `.env`:
+
+```env
+SCRADA_API_KEY=your-api-key
+SCRADA_API_SECRET=your-api-secret
+SCRADA_COMPANY_ID=your-company-uuid
+
+# Optional: Use test environment
+SCRADA_BASE_URL=https://apitest.scrada.be
+
+# Optional: Customize dispatch behavior
+PEPPOL_DISPATCH_DELAY=7  # Days to wait before sending
+PEPPOL_MAX_RETRIES=3
+PEPPOL_RETRY_DELAY=60     # Minutes
+```
+
+## Usage Overview
+
+> **📖 Detailed guide available:** See [GETTING_STARTED.md](GETTING_STARTED.md) for step-by-step instructions with full examples.
+
+### 1. Implement the Invoice Transformer
+
+Create a transformer that converts your invoice model to PEPPOL format:
 
 ```php
-return [
+use Deinte\Peppol\Contracts\InvoiceTransformer;
+use Deinte\Peppol\Data\Invoice as PeppolInvoice;
+use Illuminate\Database\Eloquent\Model;
+
+class MyInvoiceTransformer implements InvoiceTransformer
+{
+    public function toPeppolInvoice(Model $invoice): PeppolInvoice
+    {
+        return new PeppolInvoice(
+            senderVatNumber: config('company.vat_number'),
+            recipientVatNumber: $invoice->customer->vat_number,
+            recipientPeppolId: $invoice->customer->peppol_id,
+            invoiceNumber: $invoice->number,
+            invoiceDate: $invoice->date,
+            dueDate: $invoice->due_date,
+            totalAmount: $invoice->total,
+            currency: $invoice->currency,
+            lineItems: $invoice->lines->map(fn($line) => [
+                'description' => $line->description,
+                'quantity' => $line->quantity,
+                'unitPrice' => $line->unit_price,
+                'vatPerc' => $line->vat_percentage,
+            ])->toArray(),
+            pdfPath: $invoice->pdf_path,
+            alreadySentToCustomer: $invoice->email_sent,
+        );
+    }
+}
+```
+
+Register it in a service provider:
+
+```php
+use Deinte\Peppol\Contracts\InvoiceTransformer;
+
+$this->app->bind(InvoiceTransformer::class, MyInvoiceTransformer::class);
+```
+
+### 2. Look Up Companies on PEPPOL
+
+Check if a company is registered on the PEPPOL network:
+
+```php
+use Deinte\Peppol\Facades\Peppol;
+
+// Lookup and cache company
+$company = Peppol::lookupCompany('BE0123456789');
+
+if ($company && $company->isOnPeppol()) {
+    echo "Company is on PEPPOL with ID: {$company->peppol_id}";
+}
+
+// Force refresh from network
+$company = Peppol::lookupCompany('BE0123456789', forceRefresh: true);
+```
+
+### 3. Schedule Invoice Dispatch
+
+Schedule an invoice to be sent via PEPPOL:
+
+```php
+use Deinte\Peppol\Facades\Peppol;
+
+$invoice = Invoice::find(1);
+
+// Schedule with default delay (7 days)
+$peppolInvoice = Peppol::scheduleInvoice(
+    invoice: $invoice,
+    recipientVatNumber: 'BE0123456789'
+);
+
+// Schedule with custom dispatch time
+$peppolInvoice = Peppol::scheduleInvoice(
+    invoice: $invoice,
+    recipientVatNumber: 'BE0123456789',
+    dispatchAt: now()->addDays(14)
+);
+```
+
+### 4. Set Up Automatic Dispatch (Cron)
+
+Create a scheduled command to dispatch pending invoices:
+
+```php
+// app/Console/Kernel.php
+
+protected function schedule(Schedule $schedule)
+{
+    $schedule->call(function () {
+        \Deinte\Peppol\Models\PeppolInvoice::readyToDispatch()
+            ->each(function ($peppolInvoice) {
+                \Deinte\Peppol\Jobs\DispatchPeppolInvoice::dispatch(
+                    $peppolInvoice->id
+                );
+            });
+    })->daily();
+}
+```
+
+### 5. Manual Dispatch
+
+Dispatch an invoice immediately:
+
+```php
+use Deinte\Peppol\Facades\Peppol;
+use Deinte\Peppol\Jobs\DispatchPeppolInvoice;
+
+// Via job (recommended)
+DispatchPeppolInvoice::dispatch($peppolInvoice->id);
+
+// Synchronously (for testing)
+$transformer = app(\Deinte\Peppol\Contracts\InvoiceTransformer::class);
+$invoiceData = $transformer->toPeppolInvoice($invoice);
+$status = Peppol::dispatchInvoice($peppolInvoice, $invoiceData);
+```
+
+### 6. Check Invoice Status
+
+Poll for invoice status updates:
+
+```php
+use Deinte\Peppol\Facades\Peppol;
+
+$status = Peppol::getInvoiceStatus($peppolInvoice);
+
+echo "Status: {$status->status->label()}";  // "Delivered", "Accepted", etc.
+
+if ($status->status->isDelivered()) {
+    echo "Invoice successfully delivered!";
+}
+```
+
+**Set up periodic status checks:**
+
+```php
+// In your scheduler (app/Console/Kernel.php)
+protected function schedule(Schedule $schedule)
+{
+    // Check status of pending/delivered invoices every hour
+    $schedule->call(function () {
+        \Deinte\Peppol\Models\PeppolInvoice::whereIn('status', [
+            \Deinte\Peppol\Enums\PeppolStatus::PENDING,
+            \Deinte\Peppol\Enums\PeppolStatus::DELIVERED_WITHOUT_CONFIRMATION,
+        ])->each(function ($peppolInvoice) {
+            try {
+                \Deinte\Peppol\Facades\Peppol::getInvoiceStatus($peppolInvoice);
+            } catch (\Exception $e) {
+                \Log::error("Failed to check PEPPOL status: {$e->getMessage()}");
+            }
+        });
+    })->hourly();
+}
+```
+
+### 7. Retrieve UBL Files
+
+```php
+use Deinte\Peppol\Facades\Peppol;
+
+$ubl = Peppol::getUblFile($peppolInvoice);
+
+// Save to disk
+Storage::put("invoices/ubl/{$invoice->number}.xml", $ubl);
+```
+
+### 8. Listen to Events
+
+Hook into the invoice lifecycle:
+
+```php
+use Deinte\Peppol\Events\InvoiceDispatched;
+use Deinte\Peppol\Events\InvoiceStatusChanged;
+use Deinte\Peppol\Events\InvoiceFailed;
+use Deinte\Peppol\Events\CompanyFoundOnPeppol;
+
+// In EventServiceProvider
+protected $listen = [
+    InvoiceDispatched::class => [
+        SendInvoiceDispatchedNotification::class,
+    ],
+    InvoiceStatusChanged::class => [
+        UpdateInvoiceStatus::class,
+        NotifyAccountant::class,
+    ],
+    InvoiceFailed::class => [
+        AlertAdministrator::class,
+    ],
+    CompanyFoundOnPeppol::class => [
+        UpdateCustomerPeppolStatus::class,
+    ],
 ];
 ```
 
-Optionally, you can publish the views using
 
-```bash
-php artisan vendor:publish --tag=":package_slug-views"
-```
+## Model Integration
 
-## Usage
+Add PEPPOL support to your invoice model:
 
 ```php
-$variable = new VendorName\Skeleton();
-echo $variable->echoPhrase('Hello, VendorName!');
+use Deinte\Peppol\Models\PeppolInvoice;
+
+class Invoice extends Model
+{
+    public function peppolInvoice()
+    {
+        return $this->morphOne(PeppolInvoice::class, 'invoiceable');
+    }
+
+    public function sendViaPeppol(string $recipientVatNumber)
+    {
+        return \Deinte\Peppol\Facades\Peppol::scheduleInvoice(
+            invoice: $this,
+            recipientVatNumber: $recipientVatNumber
+        );
+    }
+}
+```
+
+Usage:
+
+```php
+$invoice = Invoice::find(1);
+$peppolInvoice = $invoice->sendViaPeppol('BE0123456789');
+
+// Check if invoice has been sent via PEPPOL
+if ($invoice->peppolInvoice) {
+    echo "Status: {$invoice->peppolInvoice->status->label()}";
+}
+```
+
+## Database Schema
+
+The package creates three tables:
+
+- **peppol_companies**: Cached PEPPOL participant lookups
+- **peppol_invoices**: Links your invoices to PEPPOL dispatches (polymorphic)
+- **peppol_invoice_statuses**: Complete audit trail of status changes
+
+## Available Status Codes
+
+```php
+use Deinte\Peppol\Enums\PeppolStatus;
+
+PeppolStatus::CREATED                          // Invoice created, not sent
+PeppolStatus::PENDING                          // Queued for sending
+PeppolStatus::DELIVERED_WITHOUT_CONFIRMATION   // Sent successfully
+PeppolStatus::ACCEPTED                         // Confirmed by recipient
+PeppolStatus::REJECTED                         // Rejected by recipient
+PeppolStatus::FAILED_DELIVERY                  // Failed to deliver
+```
+
+## Creating Custom Connectors
+
+Implement the `PeppolConnector` interface to add support for other PEPPOL providers:
+
+```php
+use Deinte\Peppol\Contracts\PeppolConnector;
+use Deinte\Peppol\Data\Company;
+use Deinte\Peppol\Data\Invoice;
+use Deinte\Peppol\Data\InvoiceStatus;
+
+class MyCustomConnector implements PeppolConnector
+{
+    public function lookupCompany(string $vatNumber): ?Company
+    {
+        // Implement lookup logic
+    }
+
+    public function sendInvoice(Invoice $invoice): InvoiceStatus
+    {
+        // Implement send logic
+    }
+
+    // ... implement other methods
+}
+```
+
+Register in config:
+
+```php
+// config/peppol.php
+'default_connector' => 'custom',
+
+'connectors' => [
+    'custom' => [
+        'api_key' => env('CUSTOM_API_KEY'),
+        // ... custom config
+    ],
+],
+```
+
+Update service provider:
+
+```php
+return match ($connectorName) {
+    'scrada' => new ScradaConnector(...),
+    'custom' => new MyCustomConnector(...),
+    default => throw new \InvalidArgumentException("Unknown connector: {$connectorName}"),
+};
 ```
 
 ## Testing
 
-```bash
-composer test
+The package includes factories and test helpers:
+
+```php
+use Deinte\Peppol\Models\PeppolInvoice;
+use Deinte\Peppol\Models\PeppolCompany;
+
+// In your tests
+$company = PeppolCompany::factory()->onPeppol()->create();
+$peppolInvoice = PeppolInvoice::factory()->dispatched()->create();
 ```
 
-## Changelog
+## Roadmap
 
-Please see [CHANGELOG](CHANGELOG.md) for more information on what has changed recently.
+- [ ] Automated status polling with configurable intervals
+- [ ] Self-billing support
+- [ ] Credit note support
+- [ ] Additional connector implementations (OpenPEPPOL, etc.)
+- [ ] Support for receiving invoices (requires Scrada SDK updates)
 
 ## Contributing
 
-Please see [CONTRIBUTING](CONTRIBUTING.md) for details.
+Contributions are welcome! Please ensure:
 
-## Security Vulnerabilities
-
-Please review [our security policy](../../security/policy) on how to report security vulnerabilities.
-
-## Credits
-
-- [:author_name](https://github.com/:author_username)
-- [All Contributors](../../contributors)
+- Code follows PSR-12 standards
+- All tests pass
+- New features include tests and documentation
 
 ## License
 
 The MIT License (MIT). Please see [License File](LICENSE.md) for more information.
+
+## Credits
+
+- [Dante Schrauwen](https://github.com/deinte)
+- Built with [Spatie's Laravel Package Tools](https://github.com/spatie/laravel-package-tools)
+- Powered by [Scrada](https://www.scrada.be) for PEPPOL integration

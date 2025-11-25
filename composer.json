@@ -1,24 +1,37 @@
 {
-    "name": ":vendor_slug/:package_slug",
-    "description": ":package_description",
+    "name": "deinte/laravel-peppol",
+    "description": "A Laravel package for PEPPOL electronic invoicing with support for multiple connectors",
     "keywords": [
-        ":vendor_name",
+        "deinte",
         "laravel",
-        ":package_slug"
+        "peppol",
+        "e-invoicing",
+        "electronic-invoicing",
+        "ubl"
     ],
-    "homepage": "https://github.com/:vendor_slug/:package_slug",
+    "homepage": "https://github.com/deinte/laravel-peppol",
     "license": "MIT",
     "authors": [
         {
-            "name": ":author_name",
-            "email": "author@domain.com",
+            "name": "Dante Schrauwen",
+            "email": "contact@danteschrauwen.be",
             "role": "Developer"
         }
     ],
+    "repositories": [
+        {
+            "type": "path",
+            "url": "../scrada-php-sdk",
+            "options": {
+                "symlink": true
+            }
+        }
+    ],
     "require": {
-        "php": "^8.4",
+        "php": "^8.3",
         "spatie/laravel-package-tools": "^1.16",
-        "illuminate/contracts": "^11.0||^12.0"
+        "illuminate/contracts": "^10.0||^11.0||^12.0",
+        "deinte/scrada-php-sdk": "@dev"
     },
     "require-dev": {
         "laravel/pint": "^1.14",
@@ -35,13 +48,13 @@
     },
     "autoload": {
         "psr-4": {
-            "VendorName\\Skeleton\\": "src/",
-            "VendorName\\Skeleton\\Database\\Factories\\": "database/factories/"
+            "Deinte\\Peppol\\": "src/",
+            "Deinte\\Peppol\\Database\\Factories\\": "database/factories/"
         }
     },
     "autoload-dev": {
         "psr-4": {
-            "VendorName\\Skeleton\\Tests\\": "tests/",
+            "Deinte\\Peppol\\Tests\\": "tests/",
             "Workbench\\App\\": "workbench/app/"
         }
     },
@@ -63,10 +76,10 @@
     "extra": {
         "laravel": {
             "providers": [
-                "VendorName\\Skeleton\\SkeletonServiceProvider"
+                "Deinte\\Peppol\\PeppolServiceProvider"
             ],
             "aliases": {
-                "Skeleton": "VendorName\\Skeleton\\Facades\\Skeleton"
+                "Peppol": "Deinte\\Peppol\\Facades\\Peppol"
             }
         }
     },
