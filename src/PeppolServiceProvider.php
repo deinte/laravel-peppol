@@ -52,5 +52,4 @@ class PeppolServiceProvider extends PackageServiceProvider
         // Alias for facade
         $this->app->alias(PeppolService::class, 'peppol');
     }
-
 }

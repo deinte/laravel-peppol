@@ -11,9 +11,7 @@ use Deinte\Peppol\Data\InvoiceStatus;
 use Deinte\Peppol\Enums\PeppolStatus;
 use Deinte\Peppol\Exceptions\ConnectorException;
 use Deinte\Peppol\Exceptions\InvalidInvoiceException;
-use Deinte\Peppol\Exceptions\InvalidWebhookException;
 use Deinte\Peppol\Exceptions\InvoiceNotFoundException;
-use Deinte\Peppol\Exceptions\RegistrationException;
 use Deinte\ScradaSdk\Dto\Address;
 use Deinte\ScradaSdk\Dto\CreateSalesInvoiceData;
 use Deinte\ScradaSdk\Dto\Customer;
@@ -91,7 +89,7 @@ class ScradaConnector implements PeppolConnector
             return new InvoiceStatus(
                 connectorInvoiceId: $response->id,
                 status: $status,
-                updatedAt: new \DateTimeImmutable(),
+                updatedAt: new \DateTimeImmutable,
                 metadata: ['scrada_response' => $response->toArray()],
             );
         } catch (ScradaException $e) {
@@ -116,7 +114,7 @@ class ScradaConnector implements PeppolConnector
             return new InvoiceStatus(
                 connectorInvoiceId: $invoiceId,
                 status: $peppolStatus,
-                updatedAt: new \DateTimeImmutable(),
+                updatedAt: new \DateTimeImmutable,
                 metadata: $status->meta,
             );
         } catch (NotFoundException $e) {
