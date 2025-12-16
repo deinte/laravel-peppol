@@ -14,6 +14,7 @@ use Deinte\Peppol\Exceptions\ConnectorException;
 use Deinte\Peppol\Exceptions\InvalidInvoiceException;
 use Deinte\Peppol\Exceptions\InvoiceNotFoundException;
 use Deinte\ScradaSdk\Data\Address;
+use Deinte\ScradaSdk\Data\Attachment;
 use Deinte\ScradaSdk\Data\CreateSalesInvoiceData;
 use Deinte\ScradaSdk\Data\Customer;
 use Deinte\ScradaSdk\Data\InvoiceLine;
@@ -760,22 +761,55 @@ class ScradaConnector implements PeppolConnector
             ]);
         }
 
-        // Handle PDF attachment - try local path first, then URL
-        $pdfFilename = null;
-        $pdfBase64Data = null;
+        // Build attachments array
+        $attachments = $this->buildAttachments($invoice);
 
+        return new CreateSalesInvoiceData(
+            bookYear: $invoice->invoiceDate->format('Y'),
+            journal: $invoice->additionalData['journal'] ?? 'SALES',
+            number: $invoice->invoiceNumber,
+            creditInvoice: $invoice->additionalData['creditInvoice'] ?? false,
+            invoiceDate: $invoice->invoiceDate->format('Y-m-d'),
+            invoiceExpiryDate: $invoice->dueDate->format('Y-m-d'),
+            totalInclVat: $totalInclVat,
+            totalExclVat: $totalExclVat,
+            totalVat: $totalVat,
+            customer: $customer,
+            lines: $lines,
+            alreadySentToCustomer: $invoice->alreadySentToCustomer,
+            attachments: $attachments,
+        );
+    }
+
+    /**
+     * Build attachments array for the invoice.
+     *
+     * @return array<int, Attachment>
+     */
+    private function buildAttachments(Invoice $invoice): array
+    {
+        $attachments = [];
+
+        // Try local path first
         if ($invoice->pdfPath !== null && file_exists($invoice->pdfPath)) {
-            // Local file
-            $pdfFilename = basename($invoice->pdfPath);
-            $pdfBase64Data = base64_encode(file_get_contents($invoice->pdfPath));
+            $filename = basename($invoice->pdfPath);
+            $content = file_get_contents($invoice->pdfPath);
 
-            $this->log('debug', 'API: PDF attachment included (local file)', [
-                'invoice_number' => $invoice->invoiceNumber,
-                'pdf_filename' => $pdfFilename,
-                'pdf_size_bytes' => filesize($invoice->pdfPath),
-            ]);
-        } elseif ($invoice->pdfUrl !== null) {
-            // Fetch from URL
+            if ($content !== false) {
+                $attachments[] = Attachment::pdf($filename, base64_encode($content));
+
+                $this->log('debug', 'API: PDF attachment included (local file)', [
+                    'invoice_number' => $invoice->invoiceNumber,
+                    'pdf_filename' => $filename,
+                    'pdf_size_bytes' => filesize($invoice->pdfPath),
+                ]);
+            }
+
+            return $attachments;
+        }
+
+        // Fallback to URL
+        if ($invoice->pdfUrl !== null) {
             try {
                 $this->log('debug', 'API: Fetching PDF from URL', [
                     'invoice_number' => $invoice->invoiceNumber,
@@ -785,12 +819,12 @@ class ScradaConnector implements PeppolConnector
                 $pdfContent = @file_get_contents($invoice->pdfUrl);
 
                 if ($pdfContent !== false) {
-                    $pdfFilename = basename(parse_url($invoice->pdfUrl, PHP_URL_PATH) ?? "{$invoice->invoiceNumber}.pdf");
-                    $pdfBase64Data = base64_encode($pdfContent);
+                    $filename = basename(parse_url($invoice->pdfUrl, PHP_URL_PATH) ?? "{$invoice->invoiceNumber}.pdf");
+                    $attachments[] = Attachment::pdf($filename, base64_encode($pdfContent));
 
                     $this->log('debug', 'API: PDF attachment included (from URL)', [
                         'invoice_number' => $invoice->invoiceNumber,
-                        'pdf_filename' => $pdfFilename,
+                        'pdf_filename' => $filename,
                         'pdf_size_bytes' => strlen($pdfContent),
                     ]);
                 } else {
@@ -808,23 +842,7 @@ class ScradaConnector implements PeppolConnector
             }
         }
 
-        return new CreateSalesInvoiceData(
-            bookYear: $invoice->invoiceDate->format('Y'),
-            journal: $invoice->additionalData['journal'] ?? 'SALES',
-            number: $invoice->invoiceNumber,
-            creditInvoice: $invoice->additionalData['creditInvoice'] ?? false,
-            invoiceDate: $invoice->invoiceDate->format('Y-m-d'),
-            invoiceExpiryDate: $invoice->dueDate->format('Y-m-d'),
-            totalInclVat: $totalInclVat,
-            totalExclVat: $totalExclVat,
-            totalVat: $totalVat,
-            customer: $customer,
-            lines: $lines,
-            alreadySentToCustomer: $invoice->alreadySentToCustomer,
-            pdfFilename: $pdfFilename,
-            pdfMimeType: 'application/pdf',
-            pdfBase64Data: $pdfBase64Data,
-        );
+        return $attachments;
     }
 
     /**
