@@ -5,10 +5,12 @@ declare(strict_types=1);
 namespace Deinte\Peppol\Models;
 
 use Deinte\Peppol\Enums\PeppolStatus;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\MorphTo;
+use Illuminate\Support\Facades\DB;
 
 /**
  * PEPPOL invoice tracking.
@@ -22,6 +24,7 @@ use Illuminate\Database\Eloquent\Relations\MorphTo;
  * @property int|null $recipient_peppol_company_id
  * @property string|null $connector_invoice_id
  * @property PeppolStatus $status
+ * @property bool $skip_peppol_delivery
  * @property string|null $status_message
  * @property \Illuminate\Support\Carbon|null $scheduled_dispatch_at
  * @property \Illuminate\Support\Carbon|null $dispatched_at
@@ -37,7 +40,12 @@ class PeppolInvoice extends Model
         'invoiceable_id',
         'recipient_peppol_company_id',
         'connector_invoice_id',
+        'connector_type',
+        'connector_status',
+        'connector_error',
+        'connector_uploaded_at',
         'status',
+        'skip_peppol_delivery',
         'status_message',
         'scheduled_dispatch_at',
         'dispatched_at',
@@ -47,7 +55,9 @@ class PeppolInvoice extends Model
 
     protected $casts = [
         'status' => PeppolStatus::class,
+        'skip_peppol_delivery' => 'boolean',
         'metadata' => 'array',
+        'connector_uploaded_at' => 'datetime',
         'scheduled_dispatch_at' => 'datetime',
         'dispatched_at' => 'datetime',
         'delivered_at' => 'datetime',
@@ -84,22 +94,24 @@ class PeppolInvoice extends Model
      */
     public function updateStatus(PeppolStatus $status, ?string $message = null, ?array $metadata = null): void
     {
-        $this->update([
-            'status' => $status,
-            'status_message' => $message,
-        ]);
+        DB::transaction(function () use ($status, $message, $metadata) {
+            $updateData = [
+                'status' => $status,
+                'status_message' => $message,
+            ];
 
-        // Update delivered_at timestamp if status indicates delivery
-        if ($status->isDelivered() && $this->delivered_at === null) {
-            $this->update(['delivered_at' => now()]);
-        }
+            if ($status->isDelivered() && $this->delivered_at === null) {
+                $updateData['delivered_at'] = now();
+            }
 
-        // Create status history entry
-        $this->statuses()->create([
-            'status' => $status,
-            'message' => $message,
-            'metadata' => $metadata,
-        ]);
+            $this->update($updateData);
+
+            $this->statuses()->create([
+                'status' => $status,
+                'message' => $message,
+                'metadata' => $metadata,
+            ]);
+        });
     }
 
     /**
@@ -115,7 +127,7 @@ class PeppolInvoice extends Model
     /**
      * Scope to get invoices ready for dispatch.
      */
-    public function scopeReadyToDispatch($query)
+    public function scopeReadyToDispatch(Builder $query): Builder
     {
         return $query->whereNull('dispatched_at')
             ->whereNotNull('scheduled_dispatch_at')
@@ -125,7 +137,7 @@ class PeppolInvoice extends Model
     /**
      * Scope to filter by status.
      */
-    public function scopeWithStatus($query, PeppolStatus $status)
+    public function scopeWithStatus(Builder $query, PeppolStatus $status): Builder
     {
         return $query->where('status', $status);
     }

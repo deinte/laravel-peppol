@@ -12,8 +12,17 @@ return new class extends Migration
             $table->id();
             $table->morphs('invoiceable'); // Polymorphic relation to your invoice model
             $table->unsignedBigInteger('recipient_peppol_company_id')->nullable()->index();
+
+            // Connector tracking (which connector was used and upload status)
             $table->string('connector_invoice_id')->nullable()->index();
+            $table->string('connector_type')->nullable(); // e.g., 'scrada'
+            $table->string('connector_status')->default('PENDING'); // PENDING, SUCCESS, FAILED
+            $table->text('connector_error')->nullable();
+            $table->timestamp('connector_uploaded_at')->nullable();
+
+            // PEPPOL delivery status (from connector)
             $table->string('status')->default('PENDING')->index();
+            $table->boolean('skip_peppol_delivery')->default(false);
             $table->text('status_message')->nullable();
             $table->timestamp('scheduled_dispatch_at')->nullable()->index();
             $table->timestamp('dispatched_at')->nullable();

@@ -20,14 +20,20 @@ use Deinte\Peppol\Data\InvoiceStatus;
 interface PeppolConnector
 {
     /**
-     * Look up a company on the PEPPOL network by VAT number.
+     * Look up a company on the PEPPOL network.
      *
      * @param  string  $vatNumber  The VAT number to search for (e.g., 'BE0123456789')
+     * @param  string|null  $taxNumber  Optional tax/enterprise number (e.g., KvK, CBE)
+     * @param  string|null  $country  ISO 3166-1 alpha-2 country code
      * @return Company|null Returns company data if found, null otherwise
      *
      * @throws \Deinte\Peppol\Exceptions\ConnectorException
      */
-    public function lookupCompany(string $vatNumber): ?Company;
+    public function lookupCompany(
+        string $vatNumber,
+        ?string $taxNumber = null,
+        ?string $country = null,
+    ): ?Company;
 
     /**
      * Send an invoice via the PEPPOL network.

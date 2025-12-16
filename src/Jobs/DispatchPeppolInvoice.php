@@ -31,19 +31,35 @@ class DispatchPeppolInvoice implements ShouldQueue
         $this->onQueue(config('peppol.dispatch.queue', 'default'));
     }
 
+    private function log(string $level, string $message, array $context = []): void
+    {
+        Log::channel('peppol')->{$level}("[DispatchPeppolInvoice] {$message}", $context);
+    }
+
     public function handle(PeppolService $service): void
     {
+        $this->log('info', 'Job started', [
+            'peppol_invoice_id' => $this->peppolInvoiceId,
+            'attempt' => $this->attempts(),
+            'max_tries' => $this->tries,
+        ]);
+
         $peppolInvoice = PeppolInvoice::find($this->peppolInvoiceId);
 
         if (! $peppolInvoice) {
-            Log::error('PEPPOL invoice not found', ['id' => $this->peppolInvoiceId]);
+            $this->log('error', 'PEPPOL invoice not found', [
+                'peppol_invoice_id' => $this->peppolInvoiceId,
+            ]);
 
             return;
         }
 
         // Skip if already dispatched
         if ($peppolInvoice->dispatched_at) {
-            Log::info('PEPPOL invoice already dispatched', ['id' => $this->peppolInvoiceId]);
+            $this->log('info', 'Invoice already dispatched - skipping', [
+                'peppol_invoice_id' => $this->peppolInvoiceId,
+                'dispatched_at' => $peppolInvoice->dispatched_at->toIso8601String(),
+            ]);
 
             return;
         }
@@ -52,7 +68,7 @@ class DispatchPeppolInvoice implements ShouldQueue
         $invoice = $peppolInvoice->invoiceable;
 
         if (! $invoice) {
-            Log::error('Invoiceable model not found', [
+            $this->log('error', 'Invoiceable model not found', [
                 'peppol_invoice_id' => $this->peppolInvoiceId,
                 'invoiceable_type' => $peppolInvoice->invoiceable_type,
                 'invoiceable_id' => $peppolInvoice->invoiceable_id,
@@ -61,12 +77,34 @@ class DispatchPeppolInvoice implements ShouldQueue
             return;
         }
 
+        $this->log('debug', 'Invoiceable model loaded', [
+            'peppol_invoice_id' => $this->peppolInvoiceId,
+            'invoiceable_type' => $peppolInvoice->invoiceable_type,
+            'invoiceable_id' => $peppolInvoice->invoiceable_id,
+        ]);
+
         try {
             // Transform the invoice using the app's transformer
+            $this->log('debug', 'Transforming invoice to PEPPOL format', [
+                'peppol_invoice_id' => $this->peppolInvoiceId,
+            ]);
+
             $transformer = app(InvoiceTransformer::class);
             $invoiceData = $transformer->toPeppolInvoice($invoice);
 
+            $this->log('debug', 'Invoice transformed successfully', [
+                'peppol_invoice_id' => $this->peppolInvoiceId,
+                'invoice_number' => $invoiceData->invoiceNumber,
+                'recipient_vat' => $invoiceData->recipientVatNumber,
+                'total_amount' => $invoiceData->totalAmount,
+                'line_items_count' => count($invoiceData->lineItems),
+            ]);
+
             // Dispatch via service
+            $this->log('info', 'Dispatching invoice via PeppolService', [
+                'peppol_invoice_id' => $this->peppolInvoiceId,
+            ]);
+
             $status = $service->dispatchInvoice($peppolInvoice, $invoiceData);
 
             // Fire success event
@@ -74,15 +112,19 @@ class DispatchPeppolInvoice implements ShouldQueue
                 event(new InvoiceDispatched($peppolInvoice));
             }
 
-            Log::info('PEPPOL invoice dispatched successfully', [
+            $this->log('info', 'Job completed successfully', [
                 'peppol_invoice_id' => $this->peppolInvoiceId,
                 'connector_invoice_id' => $status->connectorInvoiceId,
                 'status' => $status->status->value,
+                'attempt' => $this->attempts(),
             ]);
         } catch (\Exception $e) {
-            Log::error('Failed to dispatch PEPPOL invoice', [
+            $this->log('error', 'Job failed', [
                 'peppol_invoice_id' => $this->peppolInvoiceId,
+                'attempt' => $this->attempts(),
+                'max_tries' => $this->tries,
                 'error' => $e->getMessage(),
+                'exception_class' => $e::class,
                 'trace' => $e->getTraceAsString(),
             ]);
 
@@ -101,5 +143,15 @@ class DispatchPeppolInvoice implements ShouldQueue
         $retryDelay = config('peppol.dispatch.retry_delay_minutes', 60);
 
         return [$retryDelay * 60, $retryDelay * 120, $retryDelay * 180];
+    }
+
+    public function failed(?\Throwable $exception): void
+    {
+        $this->log('error', 'Job permanently failed after all retries', [
+            'peppol_invoice_id' => $this->peppolInvoiceId,
+            'attempts' => $this->attempts(),
+            'error' => $exception?->getMessage(),
+            'exception_class' => $exception ? $exception::class : null,
+        ]);
     }
 }

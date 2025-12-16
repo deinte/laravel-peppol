@@ -20,6 +20,9 @@ class PeppolServiceProvider extends PackageServiceProvider
                 'create_peppol_companies_table',
                 'create_peppol_invoices_table',
                 'create_peppol_invoice_statuses_table',
+                'add_tax_number_fields_to_peppol_companies_table',
+                'add_skip_peppol_delivery_to_peppol_invoices_table',
+                'add_connector_tracking_to_peppol_invoices_table',
             ]);
     }
 

@@ -12,6 +12,7 @@ use Deinte\Peppol\Enums\PeppolStatus;
 use Deinte\Peppol\Models\PeppolCompany;
 use Deinte\Peppol\Models\PeppolInvoice;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Main service for PEPPOL operations.
@@ -25,54 +26,188 @@ class PeppolService
         private readonly PeppolConnector $connector,
     ) {}
 
+    private function log(string $level, string $message, array $context = []): void
+    {
+        Log::channel('peppol')->{$level}("[PeppolService] {$message}", $context);
+    }
+
     /**
      * Look up a company on the PEPPOL network and cache the result.
+     *
+     * @param  string  $vatNumber  The VAT number to lookup
+     * @param  bool  $forceRefresh  Skip cache and force API lookup
+     * @param  string|null  $taxNumber  Optional tax/enterprise number (e.g., KvK, CBE)
+     * @param  string|null  $country  ISO 3166-1 alpha-2 country code
      */
-    public function lookupCompany(string $vatNumber, bool $forceRefresh = false): ?PeppolCompany
-    {
-        // Check cache first unless force refresh
+    public function lookupCompany(
+        string $vatNumber,
+        bool $forceRefresh = false,
+        ?string $taxNumber = null,
+        ?string $country = null,
+    ): ?PeppolCompany {
+        // Normalize the VAT number (remove spaces, dots, dashes)
+        $vatNumber = Company::normalizeVatNumber($vatNumber);
+
+        $this->log('info', 'Looking up company', [
+            'vat_number' => $vatNumber,
+            'tax_number' => $taxNumber,
+            'country' => $country,
+            'force_refresh' => $forceRefresh,
+        ]);
+
         if (! $forceRefresh) {
             $cached = PeppolCompany::findByVatNumber($vatNumber);
 
             if ($cached && $this->isCacheValid($cached)) {
+                $this->log('debug', 'Cache hit - returning cached company', [
+                    'vat_number' => $vatNumber,
+                    'peppol_id' => $cached->peppol_id,
+                    'cached_at' => $cached->last_lookup_at?->toIso8601String(),
+                    'cache_age_hours' => $cached->last_lookup_at?->diffInHours(now()),
+                ]);
+
                 return $cached;
             }
+
+            if ($cached) {
+                $this->log('debug', 'Cache expired - will refresh', [
+                    'vat_number' => $vatNumber,
+                    'cached_at' => $cached->last_lookup_at?->toIso8601String(),
+                    'cache_age_hours' => $cached->last_lookup_at?->diffInHours(now()),
+                    'cache_max_hours' => config('peppol.lookup.cache_hours', 168),
+                ]);
+            } else {
+                $this->log('debug', 'Cache miss - no cached entry found', [
+                    'vat_number' => $vatNumber,
+                ]);
+            }
+        } else {
+            $this->log('debug', 'Force refresh requested - skipping cache', [
+                'vat_number' => $vatNumber,
+            ]);
         }
 
-        // Perform lookup via connector
-        $company = $this->connector->lookupCompany($vatNumber);
+        $this->log('debug', 'Calling connector to lookup company', [
+            'vat_number' => $vatNumber,
+            'tax_number' => $taxNumber,
+            'country' => $country,
+        ]);
+
+        $company = $this->connector->lookupCompany($vatNumber, $taxNumber, $country);
 
         if (! $company) {
+            $this->log('warning', 'Company lookup returned null', [
+                'vat_number' => $vatNumber,
+            ]);
+
             return null;
         }
 
-        // Cache the result
+        $this->log('info', 'Company lookup successful', [
+            'vat_number' => $vatNumber,
+            'peppol_id' => $company->peppolId,
+            'on_peppol' => $company->peppolId !== null,
+            'name' => $company->name,
+            'country' => $company->country,
+            'tax_number' => $company->taxNumber,
+            'tax_number_scheme' => $company->taxNumberScheme?->value,
+        ]);
+
         return $this->cacheCompany($company);
     }
 
     /**
      * Schedule an invoice for PEPPOL dispatch.
+     *
+     * If the invoice already has a pending PeppolInvoice record (not yet dispatched),
+     * it will be updated instead of creating a duplicate.
+     *
+     * @param  Model  $invoice  The invoice model to schedule
+     * @param  string  $recipientVatNumber  The recipient's VAT number
+     * @param  \DateTimeInterface|null  $dispatchAt  When to dispatch (defaults to delay_days from config)
+     * @param  bool|null  $skipPeppolDelivery  If true, invoice is stored in connector but not sent via PEPPOL.
+     *                                         If null, automatically determined based on recipient PEPPOL status.
      */
     public function scheduleInvoice(
         Model $invoice,
         string $recipientVatNumber,
-        ?\DateTimeInterface $dispatchAt = null
+        ?\DateTimeInterface $dispatchAt = null,
+        ?bool $skipPeppolDelivery = null,
     ): PeppolInvoice {
-        // Look up recipient company
-        $recipientCompany = $this->lookupCompany($recipientVatNumber);
+        $this->log('info', 'Scheduling invoice for PEPPOL dispatch', [
+            'invoice_type' => $invoice::class,
+            'invoice_id' => $invoice->getKey(),
+            'recipient_vat' => $recipientVatNumber,
+            'dispatch_at' => $dispatchAt?->format('Y-m-d H:i:s'),
+            'skip_peppol_delivery' => $skipPeppolDelivery,
+        ]);
 
-        if (! $recipientCompany || ! $recipientCompany->isOnPeppol()) {
-            throw new \RuntimeException("Recipient {$recipientVatNumber} is not on PEPPOL");
+        $existingPeppolInvoice = PeppolInvoice::query()
+            ->where('invoiceable_type', $invoice::class)
+            ->where('invoiceable_id', $invoice->getKey())
+            ->whereNull('dispatched_at')
+            ->first();
+
+        if ($existingPeppolInvoice) {
+            $this->log('info', 'Found existing pending PeppolInvoice - updating instead of creating', [
+                'peppol_invoice_id' => $existingPeppolInvoice->id,
+                'invoice_id' => $invoice->getKey(),
+            ]);
         }
 
-        // Create PEPPOL invoice record
-        return PeppolInvoice::create([
-            'invoiceable_type' => $invoice::class,
-            'invoiceable_id' => $invoice->getKey(),
-            'recipient_peppol_company_id' => $recipientCompany->id,
+        $recipientCompany = $this->lookupCompany($recipientVatNumber);
+        $isOnPeppol = $recipientCompany?->isOnPeppol() ?? false;
+
+        if ($skipPeppolDelivery === null) {
+            $skipPeppolDelivery = ! $isOnPeppol;
+        }
+
+        if (! $isOnPeppol) {
+            $this->log('info', 'Recipient not on PEPPOL network - invoice will be stored but not delivered via PEPPOL', [
+                'recipient_vat' => $recipientVatNumber,
+                'company_found' => $recipientCompany !== null,
+                'peppol_id' => $recipientCompany?->peppol_id,
+                'skip_peppol_delivery' => $skipPeppolDelivery,
+            ]);
+        }
+
+        $scheduleData = [
+            'recipient_peppol_company_id' => $recipientCompany?->id,
             'scheduled_dispatch_at' => $dispatchAt ?? now()->addDays(config('peppol.dispatch.delay_days', 7)),
             'status' => PeppolStatus::PENDING,
-        ]);
+            'skip_peppol_delivery' => $skipPeppolDelivery,
+        ];
+
+        if ($existingPeppolInvoice) {
+            $existingPeppolInvoice->update($scheduleData);
+            $peppolInvoice = $existingPeppolInvoice->fresh();
+
+            $this->log('info', 'Existing PeppolInvoice updated', [
+                'peppol_invoice_id' => $peppolInvoice->id,
+                'invoice_id' => $invoice->getKey(),
+                'recipient_vat' => $recipientVatNumber,
+                'scheduled_dispatch_at' => $peppolInvoice->scheduled_dispatch_at?->format('Y-m-d H:i:s'),
+                'skip_peppol_delivery' => $skipPeppolDelivery,
+                'is_on_peppol' => $isOnPeppol,
+            ]);
+        } else {
+            $peppolInvoice = PeppolInvoice::create([
+                'invoiceable_type' => $invoice::class,
+                'invoiceable_id' => $invoice->getKey(),
+                ...$scheduleData,
+            ]);
+
+            $this->log('info', 'New PeppolInvoice created', [
+                'peppol_invoice_id' => $peppolInvoice->id,
+                'invoice_id' => $invoice->getKey(),
+                'recipient_vat' => $recipientVatNumber,
+                'scheduled_dispatch_at' => $peppolInvoice->scheduled_dispatch_at?->format('Y-m-d H:i:s'),
+                'skip_peppol_delivery' => $skipPeppolDelivery,
+                'is_on_peppol' => $isOnPeppol,
+            ]);
+        }
+
+        return $peppolInvoice;
     }
 
     /**
@@ -80,23 +215,60 @@ class PeppolService
      */
     public function dispatchInvoice(PeppolInvoice $peppolInvoice, Invoice $invoiceData): InvoiceStatus
     {
-        // Send via connector
-        $status = $this->connector->sendInvoice($invoiceData);
-
-        // Update PEPPOL invoice record
-        $peppolInvoice->update([
-            'connector_invoice_id' => $status->connectorInvoiceId,
-            'dispatched_at' => now(),
+        $this->log('info', 'Dispatching invoice', [
+            'peppol_invoice_id' => $peppolInvoice->id,
+            'invoice_number' => $invoiceData->invoiceNumber,
+            'recipient_vat' => $invoiceData->recipientVatNumber,
+            'total_amount' => $invoiceData->totalAmount,
         ]);
 
-        // Update status
-        $peppolInvoice->updateStatus(
-            status: $status->status,
-            message: $status->message,
-            metadata: $status->metadata,
-        );
+        $connectorType = config('peppol.default_connector', 'scrada');
 
-        return $status;
+        try {
+            $status = $this->connector->sendInvoice($invoiceData);
+
+            // Update with successful connector upload
+            $peppolInvoice->update([
+                'connector_invoice_id' => $status->connectorInvoiceId,
+                'connector_type' => $connectorType,
+                'connector_status' => 'SUCCESS',
+                'connector_error' => null,
+                'connector_uploaded_at' => now(),
+                'dispatched_at' => now(),
+            ]);
+
+            $peppolInvoice->updateStatus(
+                status: $status->status,
+                message: $status->message,
+                metadata: $status->metadata,
+            );
+
+            $this->log('info', 'Invoice dispatched successfully', [
+                'peppol_invoice_id' => $peppolInvoice->id,
+                'connector_type' => $connectorType,
+                'connector_invoice_id' => $status->connectorInvoiceId,
+                'status' => $status->status->value,
+                'message' => $status->message,
+            ]);
+
+            return $status;
+        } catch (\Exception $e) {
+            // Track failed connector upload
+            $peppolInvoice->update([
+                'connector_type' => $connectorType,
+                'connector_status' => 'FAILED',
+                'connector_error' => $e->getMessage(),
+                'dispatched_at' => now(),
+            ]);
+
+            $this->log('error', 'Connector upload failed', [
+                'peppol_invoice_id' => $peppolInvoice->id,
+                'connector_type' => $connectorType,
+                'error' => $e->getMessage(),
+            ]);
+
+            throw $e;
+        }
     }
 
     /**
@@ -104,19 +276,40 @@ class PeppolService
      */
     public function getInvoiceStatus(PeppolInvoice $peppolInvoice): InvoiceStatus
     {
+        $this->log('debug', 'Getting invoice status', [
+            'peppol_invoice_id' => $peppolInvoice->id,
+            'connector_invoice_id' => $peppolInvoice->connector_invoice_id,
+            'current_status' => $peppolInvoice->status->value,
+        ]);
+
         if (! $peppolInvoice->connector_invoice_id) {
+            $this->log('error', 'Cannot get status - invoice not dispatched', [
+                'peppol_invoice_id' => $peppolInvoice->id,
+            ]);
+
             throw new \RuntimeException('Invoice has not been dispatched yet');
         }
 
         $status = $this->connector->getInvoiceStatus($peppolInvoice->connector_invoice_id);
 
-        // Update local status if changed
         if ($status->status !== $peppolInvoice->status) {
+            $this->log('info', 'Invoice status changed', [
+                'peppol_invoice_id' => $peppolInvoice->id,
+                'old_status' => $peppolInvoice->status->value,
+                'new_status' => $status->status->value,
+                'message' => $status->message,
+            ]);
+
             $peppolInvoice->updateStatus(
                 status: $status->status,
                 message: $status->message,
                 metadata: $status->metadata,
             );
+        } else {
+            $this->log('debug', 'Invoice status unchanged', [
+                'peppol_invoice_id' => $peppolInvoice->id,
+                'status' => $status->status->value,
+            ]);
         }
 
         return $status;
@@ -127,7 +320,16 @@ class PeppolService
      */
     public function getUblFile(PeppolInvoice $peppolInvoice): string
     {
+        $this->log('debug', 'Getting UBL file', [
+            'peppol_invoice_id' => $peppolInvoice->id,
+            'connector_invoice_id' => $peppolInvoice->connector_invoice_id,
+        ]);
+
         if (! $peppolInvoice->connector_invoice_id) {
+            $this->log('error', 'Cannot get UBL - invoice not dispatched', [
+                'peppol_invoice_id' => $peppolInvoice->id,
+            ]);
+
             throw new \RuntimeException('Invoice has not been dispatched yet');
         }
 
@@ -139,6 +341,13 @@ class PeppolService
      */
     private function cacheCompany(Company $company): PeppolCompany
     {
+        $this->log('debug', 'Caching company lookup result', [
+            'vat_number' => $company->vatNumber,
+            'peppol_id' => $company->peppolId,
+            'tax_number' => $company->taxNumber,
+            'tax_number_scheme' => $company->taxNumberScheme?->value,
+        ]);
+
         return PeppolCompany::updateOrCreate(
             ['vat_number' => $company->vatNumber],
             [
@@ -146,6 +355,8 @@ class PeppolService
                 'name' => $company->name,
                 'country' => $company->country,
                 'email' => $company->email,
+                'tax_number' => $company->taxNumber,
+                'tax_number_scheme' => $company->taxNumberScheme,
                 'metadata' => $company->metadata,
                 'last_lookup_at' => now(),
             ]

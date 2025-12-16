@@ -49,6 +49,7 @@ return [
             'company_id' => env('SCRADA_COMPANY_ID'),
             'base_url' => env('SCRADA_BASE_URL', 'https://api.scrada.be'),
             'timeout' => env('SCRADA_TIMEOUT', 30),
+            'journal' => env('SCRADA_JOURNAL', 'SALES'),
         ],
 
     ],

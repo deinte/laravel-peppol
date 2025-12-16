@@ -1,0 +1,24 @@
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    public function up(): void
+    {
+        Schema::table('peppol_invoices', function (Blueprint $table) {
+            // When true, invoice is stored in connector but NOT sent via PEPPOL network
+            // This happens when peppol_enabled is false or recipient not on PEPPOL
+            $table->boolean('skip_peppol_delivery')->default(false)->after('status');
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::table('peppol_invoices', function (Blueprint $table) {
+            $table->dropColumn('skip_peppol_delivery');
+        });
+    }
+};

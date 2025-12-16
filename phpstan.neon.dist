@@ -10,3 +10,6 @@ parameters:
     tmpDir: build/phpstan
     checkOctaneCompatibility: true
     checkModelProperties: true
+    ignoreErrors:
+        # env() is correctly used in config files
+        - identifier: larastan.noEnvCallsOutsideOfConfig
