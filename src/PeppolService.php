@@ -12,6 +12,7 @@ use Deinte\Peppol\Enums\PeppolStatus;
 use Deinte\Peppol\Models\PeppolCompany;
 use Deinte\Peppol\Models\PeppolInvoice;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -227,21 +228,23 @@ class PeppolService
         try {
             $status = $this->connector->sendInvoice($invoiceData);
 
-            // Update with successful connector upload
-            $peppolInvoice->update([
-                'connector_invoice_id' => $status->connectorInvoiceId,
-                'connector_type' => $connectorType,
-                'connector_status' => 'SUCCESS',
-                'connector_error' => null,
-                'connector_uploaded_at' => now(),
-                'dispatched_at' => now(),
-            ]);
+            // Wrap updates in transaction to ensure consistency
+            DB::transaction(function () use ($peppolInvoice, $status, $connectorType) {
+                $peppolInvoice->update([
+                    'connector_invoice_id' => $status->connectorInvoiceId,
+                    'connector_type' => $connectorType,
+                    'connector_status' => 'SUCCESS',
+                    'connector_error' => null,
+                    'connector_uploaded_at' => now(),
+                    'dispatched_at' => now(),
+                ]);
 
-            $peppolInvoice->updateStatus(
-                status: $status->status,
-                message: $status->message,
-                metadata: $status->metadata,
-            );
+                $peppolInvoice->updateStatus(
+                    status: $status->status,
+                    message: $status->message,
+                    metadata: $status->metadata,
+                );
+            });
 
             $this->log('info', 'Invoice dispatched successfully', [
                 'peppol_invoice_id' => $peppolInvoice->id,

@@ -99,26 +99,27 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | Status Polling Settings
+    | Poll Retry Settings
     |--------------------------------------------------------------------------
     |
-    | Configure how often to poll for invoice status updates.
-    | Scrada uses polling rather than webhooks for status updates.
+    | Configure retry behavior for failed invoices. Failed invoices will be
+    | re-polled with exponential backoff to check if the recipient has
+    | registered on PEPPOL.
     |
     */
 
-    'polling' => [
-        // Enable automatic status polling
-        'enabled' => env('PEPPOL_POLLING_ENABLED', true),
+    'poll' => [
+        // Maximum number of poll retry attempts for failed invoices
+        'max_attempts' => env('PEPPOL_POLL_MAX_ATTEMPTS', 5),
 
-        // Interval in minutes between status checks
-        'interval' => env('PEPPOL_POLLING_INTERVAL', 60),
-
-        // Only poll invoices in these statuses
-        'poll_statuses' => [
-            'PENDING',
-            'DELIVERED_WITHOUT_CONFIRMATION',
-        ],
+        // Hours to wait between retry attempts (exponential backoff)
+        // Example: [1, 4, 12, 24, 48] means:
+        // - 1st retry after 1 hour
+        // - 2nd retry after 4 hours
+        // - 3rd retry after 12 hours
+        // - 4th retry after 24 hours
+        // - 5th retry after 48 hours
+        'retry_delays' => [1, 4, 12, 24, 48],
     ],
 
     /*

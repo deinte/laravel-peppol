@@ -17,6 +17,7 @@ use Deinte\ScradaSdk\Data\Address;
 use Deinte\ScradaSdk\Data\CreateSalesInvoiceData;
 use Deinte\ScradaSdk\Data\Customer;
 use Deinte\ScradaSdk\Data\InvoiceLine;
+use Deinte\ScradaSdk\Data\SendStatus;
 use Deinte\ScradaSdk\Exceptions\NotFoundException;
 use Deinte\ScradaSdk\Exceptions\ScradaException;
 use Deinte\ScradaSdk\Scrada;
@@ -486,17 +487,23 @@ class ScradaConnector implements PeppolConnector
 
             $duration = round((microtime(true) - $startTime) * 1000, 2);
 
-            $peppolStatus = match (true) {
-                $status->pending => PeppolStatus::PENDING,
-                $status->peppolSent => PeppolStatus::DELIVERED_WITHOUT_CONFIRMATION,
-                default => PeppolStatus::CREATED,
-            };
+            // Map Scrada status string to PeppolStatus
+            // Priority: check status string first, then boolean flags
+            $peppolStatus = $this->mapScradaStatusToPeppolStatus($status);
+
+            // Extract error message from metadata if present
+            $errorMessage = $status->meta['errorMessage'] ?? null;
+            if (empty($errorMessage) && $peppolStatus->isFailed()) {
+                $errorMessage = $status->status; // Use status string as error message
+            }
 
             $this->log('debug', 'API: Invoice status retrieved', [
                 'invoice_id' => $invoiceId,
+                'scrada_status' => $status->status,
                 'pending' => $status->pending,
                 'peppol_sent' => $status->peppolSent,
                 'mapped_status' => $peppolStatus->value,
+                'error_message' => $errorMessage,
                 'duration_ms' => $duration,
             ]);
 
@@ -505,6 +512,7 @@ class ScradaConnector implements PeppolConnector
                 status: $peppolStatus,
                 updatedAt: new \DateTimeImmutable,
                 metadata: $status->meta,
+                message: $errorMessage,
             );
         } catch (NotFoundException $e) {
             $duration = round((microtime(true) - $startTime) * 1000, 2);
@@ -832,6 +840,47 @@ class ScradaConnector implements PeppolConnector
             'rejected' => PeppolStatus::REJECTED,
             'failed' => PeppolStatus::FAILED_DELIVERY,
             default => PeppolStatus::PENDING,
+        };
+    }
+
+    /**
+     * Map Scrada SendStatus to PeppolStatus enum.
+     *
+     * This method considers both the status string and boolean flags
+     * to determine the correct PeppolStatus. Error statuses like
+     * "Error not on Peppol" are properly handled.
+     */
+    private function mapScradaStatusToPeppolStatus(SendStatus $status): PeppolStatus
+    {
+        $statusLower = strtolower($status->status);
+
+        // Check for error status strings first
+        if (str_contains($statusLower, 'error')) {
+            return PeppolStatus::FAILED_DELIVERY;
+        }
+
+        // Check for rejection
+        if (str_contains($statusLower, 'reject')) {
+            return PeppolStatus::REJECTED;
+        }
+
+        // Check boolean flags
+        if ($status->peppolSent) {
+            return PeppolStatus::DELIVERED_WITHOUT_CONFIRMATION;
+        }
+
+        if ($status->pending) {
+            return PeppolStatus::PENDING;
+        }
+
+        // Map known status strings
+        return match ($statusLower) {
+            'draft', 'created' => PeppolStatus::CREATED,
+            'sent', 'delivered' => PeppolStatus::DELIVERED_WITHOUT_CONFIRMATION,
+            'accepted' => PeppolStatus::ACCEPTED,
+            'rejected' => PeppolStatus::REJECTED,
+            'failed' => PeppolStatus::FAILED_DELIVERY,
+            default => PeppolStatus::CREATED,
         };
     }
 }

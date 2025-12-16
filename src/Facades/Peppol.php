@@ -12,8 +12,8 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Facade;
 
 /**
- * @method static PeppolCompany|null lookupCompany(string $vatNumber, bool $forceRefresh = false)
- * @method static PeppolInvoice scheduleInvoice(Model $invoice, string $recipientVatNumber, ?\DateTimeInterface $dispatchAt = null)
+ * @method static PeppolCompany|null lookupCompany(string $vatNumber, bool $forceRefresh = false, ?string $taxNumber = null, ?string $country = null)
+ * @method static PeppolInvoice scheduleInvoice(Model $invoice, string $recipientVatNumber, ?\DateTimeInterface $dispatchAt = null, ?bool $skipPeppolDelivery = null)
  * @method static InvoiceStatus dispatchInvoice(PeppolInvoice $peppolInvoice, Invoice $invoiceData)
  * @method static InvoiceStatus getInvoiceStatus(PeppolInvoice $peppolInvoice)
  * @method static string getUblFile(PeppolInvoice $peppolInvoice)

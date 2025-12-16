@@ -26,6 +26,8 @@ use Illuminate\Support\Facades\DB;
  * @property PeppolStatus $status
  * @property bool $skip_peppol_delivery
  * @property string|null $status_message
+ * @property int $poll_attempts
+ * @property \Illuminate\Support\Carbon|null $next_poll_at
  * @property \Illuminate\Support\Carbon|null $scheduled_dispatch_at
  * @property \Illuminate\Support\Carbon|null $dispatched_at
  * @property \Illuminate\Support\Carbon|null $delivered_at
@@ -47,6 +49,8 @@ class PeppolInvoice extends Model
         'status',
         'skip_peppol_delivery',
         'status_message',
+        'poll_attempts',
+        'next_poll_at',
         'scheduled_dispatch_at',
         'dispatched_at',
         'delivered_at',
@@ -56,8 +60,10 @@ class PeppolInvoice extends Model
     protected $casts = [
         'status' => PeppolStatus::class,
         'skip_peppol_delivery' => 'boolean',
+        'poll_attempts' => 'integer',
         'metadata' => 'array',
         'connector_uploaded_at' => 'datetime',
+        'next_poll_at' => 'datetime',
         'scheduled_dispatch_at' => 'datetime',
         'dispatched_at' => 'datetime',
         'delivered_at' => 'datetime',
@@ -140,5 +146,81 @@ class PeppolInvoice extends Model
     public function scopeWithStatus(Builder $query, PeppolStatus $status): Builder
     {
         return $query->where('status', $status);
+    }
+
+    /**
+     * Scope to get invoices that need status polling.
+     *
+     * Includes:
+     * - Dispatched invoices not in final status
+     * - Failed invoices that haven't exceeded max retries and are due for polling
+     */
+    public function scopeNeedsPolling(Builder $query, int $maxPollAttempts = 5): Builder
+    {
+        $finalStatuses = [
+            PeppolStatus::ACCEPTED,
+            PeppolStatus::REJECTED,
+        ];
+
+        return $query
+            ->whereNotNull('dispatched_at')
+            ->whereNotNull('connector_invoice_id')
+            ->where('skip_peppol_delivery', false)
+            ->where(function (Builder $q) use ($finalStatuses, $maxPollAttempts) {
+                // Normal invoices not in final status
+                $q->whereNotIn('status', [
+                    ...$finalStatuses,
+                    PeppolStatus::FAILED_DELIVERY,
+                ]);
+
+                // OR failed invoices that can still be retried
+                $q->orWhere(function (Builder $failed) use ($maxPollAttempts) {
+                    $failed->where('status', PeppolStatus::FAILED_DELIVERY)
+                        ->where('poll_attempts', '<', $maxPollAttempts)
+                        ->where(function (Builder $timing) {
+                            $timing->whereNull('next_poll_at')
+                                ->orWhere('next_poll_at', '<=', now());
+                        });
+                });
+            });
+    }
+
+    /**
+     * Schedule the next poll attempt for a failed invoice.
+     *
+     * Uses exponential backoff: 1h, 4h, 12h, 24h, 48h
+     * Updates attributes in memory so no fresh() call is needed after.
+     */
+    public function scheduleNextPoll(): void
+    {
+        $delays = config('peppol.poll.retry_delays', [1, 4, 12, 24, 48]); // hours
+        $attempt = $this->poll_attempts;
+
+        $delayHours = $delays[$attempt] ?? $delays[array_key_last($delays)];
+
+        $this->poll_attempts = $attempt + 1;
+        $this->next_poll_at = now()->addHours($delayHours);
+        $this->save();
+    }
+
+    /**
+     * Check if this invoice has exceeded max poll attempts.
+     */
+    public function hasExceededMaxPollAttempts(): bool
+    {
+        $maxAttempts = config('peppol.poll.max_attempts', 5);
+
+        return $this->poll_attempts >= $maxAttempts;
+    }
+
+    /**
+     * Reset poll attempts (e.g., when status changes from failed to something else).
+     */
+    public function resetPollAttempts(): void
+    {
+        $this->update([
+            'poll_attempts' => 0,
+            'next_poll_at' => null,
+        ]);
     }
 }
