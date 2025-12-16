@@ -96,6 +96,10 @@ class TestCase extends Orchestra
             $table->morphs('invoiceable');
             $table->unsignedBigInteger('recipient_peppol_company_id')->nullable()->index();
             $table->string('connector_invoice_id')->nullable()->index();
+            $table->string('connector_type')->nullable();
+            $table->string('connector_status')->default('PENDING');
+            $table->text('connector_error')->nullable();
+            $table->timestamp('connector_uploaded_at')->nullable();
             $table->string('status')->default('PENDING')->index();
             $table->boolean('skip_peppol_delivery')->default(false);
             $table->text('status_message')->nullable();
