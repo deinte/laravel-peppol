@@ -143,16 +143,29 @@ class PeppolService
             'skip_peppol_delivery' => $skipPeppolDelivery,
         ]);
 
+        // Check for any existing PeppolInvoice (pending or dispatched)
         $existingPeppolInvoice = PeppolInvoice::query()
             ->where('invoiceable_type', $invoice::class)
             ->where('invoiceable_id', $invoice->getKey())
-            ->whereNull('dispatched_at')
             ->first();
 
         if ($existingPeppolInvoice) {
-            $this->log('info', 'Found existing pending PeppolInvoice - updating instead of creating', [
+            // If already dispatched successfully, return the existing record
+            if ($existingPeppolInvoice->dispatched_at && $existingPeppolInvoice->connector_status === 'SUCCESS') {
+                $this->log('info', 'Invoice already dispatched - returning existing PeppolInvoice', [
+                    'peppol_invoice_id' => $existingPeppolInvoice->id,
+                    'invoice_id' => $invoice->getKey(),
+                    'connector_invoice_id' => $existingPeppolInvoice->connector_invoice_id,
+                ]);
+
+                return $existingPeppolInvoice;
+            }
+
+            $this->log('info', 'Found existing PeppolInvoice - updating instead of creating', [
                 'peppol_invoice_id' => $existingPeppolInvoice->id,
                 'invoice_id' => $invoice->getKey(),
+                'dispatched_at' => $existingPeppolInvoice->dispatched_at,
+                'connector_status' => $existingPeppolInvoice->connector_status,
             ]);
         }
 
@@ -225,11 +238,14 @@ class PeppolService
 
         $connectorType = config('peppol.default_connector', 'scrada');
 
+        // Capture the request payload (sanitized to remove base64 content)
+        $requestPayload = $this->sanitizePayload($invoiceData->toArray());
+
         try {
             $status = $this->connector->sendInvoice($invoiceData);
 
             // Wrap updates in transaction to ensure consistency
-            DB::transaction(function () use ($peppolInvoice, $status, $connectorType) {
+            DB::transaction(function () use ($peppolInvoice, $status, $connectorType, $requestPayload) {
                 $peppolInvoice->update([
                     'connector_invoice_id' => $status->connectorInvoiceId,
                     'connector_type' => $connectorType,
@@ -237,6 +253,7 @@ class PeppolService
                     'connector_error' => null,
                     'connector_uploaded_at' => now(),
                     'dispatched_at' => now(),
+                    'request_payload' => $requestPayload,
                 ]);
 
                 $peppolInvoice->updateStatus(
@@ -256,12 +273,13 @@ class PeppolService
 
             return $status;
         } catch (\Exception $e) {
-            // Track failed connector upload
+            // Track failed connector upload (still save the payload for debugging)
             $peppolInvoice->update([
                 'connector_type' => $connectorType,
                 'connector_status' => 'FAILED',
                 'connector_error' => $e->getMessage(),
                 'dispatched_at' => now(),
+                'request_payload' => $requestPayload,
             ]);
 
             $this->log('error', 'Connector upload failed', [
@@ -294,6 +312,15 @@ class PeppolService
         }
 
         $status = $this->connector->getInvoiceStatus($peppolInvoice->connector_invoice_id);
+
+        // Save the poll response for debugging
+        $pollResponse = [
+            'status' => $status->status->value,
+            'message' => $status->message,
+            'metadata' => $status->metadata,
+            'polled_at' => now()->toIso8601String(),
+        ];
+        $peppolInvoice->update(['poll_response' => $pollResponse]);
 
         if ($status->status !== $peppolInvoice->status) {
             $this->log('info', 'Invoice status changed', [
@@ -378,5 +405,56 @@ class PeppolService
         $cacheHours = config('peppol.lookup.cache_hours', 168);
 
         return $company->last_lookup_at->diffInHours(now()) < $cacheHours;
+    }
+
+    /**
+     * Sanitize a payload array by removing base64 content.
+     *
+     * This prevents storing large binary data in the database while
+     * still preserving the payload structure for debugging.
+     */
+    private function sanitizePayload(array $data): array
+    {
+        return $this->recursiveSanitize($data);
+    }
+
+    /**
+     * Recursively sanitize an array, replacing base64 content with placeholders.
+     */
+    private function recursiveSanitize(array $data): array
+    {
+        foreach ($data as $key => $value) {
+            if (is_array($value)) {
+                $data[$key] = $this->recursiveSanitize($value);
+            } elseif (is_string($value)) {
+                // Check if this looks like base64 content (longer than 500 chars and valid base64)
+                if (strlen($value) > 500 && $this->looksLikeBase64($value)) {
+                    $data[$key] = '[BASE64_CONTENT_REMOVED:'.strlen($value).'_bytes]';
+                }
+            }
+        }
+
+        return $data;
+    }
+
+    /**
+     * Check if a string looks like base64-encoded content.
+     */
+    private function looksLikeBase64(string $value): bool
+    {
+        // Check if string only contains base64 characters
+        if (! preg_match('/^[A-Za-z0-9+\/=]+$/', $value)) {
+            return false;
+        }
+
+        // Check if length is valid for base64 (should be divisible by 4)
+        if (strlen($value) % 4 !== 0) {
+            return false;
+        }
+
+        // Try to decode a small portion to verify
+        $decoded = base64_decode(substr($value, 0, 100), true);
+
+        return $decoded !== false;
     }
 }

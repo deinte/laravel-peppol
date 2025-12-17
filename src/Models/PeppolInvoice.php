@@ -55,6 +55,8 @@ class PeppolInvoice extends Model
         'dispatched_at',
         'delivered_at',
         'metadata',
+        'request_payload',
+        'poll_response',
     ];
 
     protected $casts = [
@@ -62,6 +64,8 @@ class PeppolInvoice extends Model
         'skip_peppol_delivery' => 'boolean',
         'poll_attempts' => 'integer',
         'metadata' => 'array',
+        'request_payload' => 'array',
+        'poll_response' => 'array',
         'connector_uploaded_at' => 'datetime',
         'next_poll_at' => 'datetime',
         'scheduled_dispatch_at' => 'datetime',
