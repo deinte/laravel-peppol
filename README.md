@@ -1,5 +1,13 @@
 # Laravel PEPPOL
 
+[![Experimental](https://img.shields.io/badge/status-experimental-orange)](https://github.com/deinte/laravel-peppol)
+[![AI Generated](https://img.shields.io/badge/AI-generated-blue)](https://github.com/deinte/laravel-peppol)
+[![Use at your own risk](https://img.shields.io/badge/use%20at%20your%20own-risk-red)](https://github.com/deinte/laravel-peppol)
+
+> **⚠️ AI-Generated Code Notice**
+>
+> This package was primarily generated with AI assistance (Claude). While it includes tests and has been reviewed, it may contain bugs or edge cases that haven't been fully tested in production environments. Use at your own risk and thoroughly test before deploying to production.
+
 A flexible Laravel package for sending electronic invoices via the PEPPOL network with support for multiple connectors.
 
 > **📖 NEW TO THIS PACKAGE?** Start with the [Getting Started Guide](GETTING_STARTED.md) for a complete step-by-step setup tutorial!
