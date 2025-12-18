@@ -18,6 +18,12 @@
             "role": "Developer"
         }
     ],
+    "repositories": [
+        {
+            "type": "vcs",
+            "url": "https://github.com/deinte/scrada-php-sdk"
+        }
+    ],
     "require": {
         "php": "^8.3",
         "spatie/laravel-package-tools": "^1.16",
