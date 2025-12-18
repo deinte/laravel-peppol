@@ -149,6 +149,7 @@ describe('Invoice DTO', function () {
                 'pdf_content' => '[BASE64_CONTENT]',
                 'pdf_filename' => 'invoice.pdf',
                 'already_sent_to_customer' => true,
+                'payment_methods' => [],
                 'additional_data' => ['journal' => 'SALES'],
             ]);
         });

@@ -16,6 +16,9 @@ namespace Deinte\Peppol\Data;
  */
 class Invoice
 {
+    /**
+     * @param  array<int, array{paymentType: int, name: string, totalPaid?: float, totalToPay?: float}>  $paymentMethods
+     */
     public function __construct(
         public readonly string $senderVatNumber,
         public readonly string $recipientVatNumber,
@@ -30,6 +33,7 @@ class Invoice
         public readonly ?string $pdfContent = null,
         public readonly ?string $pdfFilename = null,
         public readonly bool $alreadySentToCustomer = false,
+        public readonly array $paymentMethods = [],
         public readonly ?array $additionalData = null,
     ) {}
 
@@ -54,6 +58,7 @@ class Invoice
             'pdf_content' => $this->pdfContent ? '[BASE64_CONTENT]' : null,
             'pdf_filename' => $this->pdfFilename,
             'already_sent_to_customer' => $this->alreadySentToCustomer,
+            'payment_methods' => $this->paymentMethods,
             'additional_data' => $this->additionalData,
         ];
     }

@@ -246,3 +246,79 @@ Removed obsolete baseline entry for dead code that was removed.
 | File | Change |
 |------|--------|
 | `phpstan-baseline.neon` | Added entries for type inference edge cases |
+
+---
+
+## Payment Methods Support (Latest)
+
+### New Feature: Payment Methods for Sales Invoices
+
+Added optional `paymentMethods` field to mark invoices as paid when sending to Scrada.
+
+#### Invoice DTO
+
+```php
+new Invoice(
+    // ... other fields
+    paymentMethods: [
+        [
+            'paymentType' => 1,  // 1=Undefined, 2=Wire transfer, 7=Online payment provider, etc.
+            'name' => 'Betaald',
+            'totalPaid' => 100.00,
+            'totalToPay' => 0.0,
+        ],
+    ],
+);
+```
+
+**Payment Types:**
+- 1: Undefined (Unknown)
+- 2: Wire transfer (Overschrijving)
+- 3: Bank card (iDeal)
+- 4: Direct debit (Domiciliëring)
+- 5: Cash
+- 6: Credit card
+- 7: Online payment provider (Mollie, Stripe)
+- 8: Cheque
+- 9: Debit card (Bancontact)
+
+#### Example Usage in Transformer
+
+```php
+private function getPaymentMethods(Order $order): array
+{
+    if ($order->paid_at === null) {
+        return [];
+    }
+
+    return [
+        [
+            'paymentType' => 1,
+            'name' => 'Betaald',
+            'totalPaid' => $order->total_amount,
+            'totalToPay' => 0.0,
+        ],
+    ];
+}
+```
+
+### Dispatch Logic Improvements
+
+#### Prevent Re-sending Already Dispatched Invoices
+
+`PeppolService::dispatchInvoice()` now checks for existing `connector_invoice_id`:
+
+1. **Has `existing:...` prefix** → Returns current status (invoice already existed in Scrada)
+2. **Has real connector ID** → Polls for status instead of re-sending
+3. **No connector ID** → Sends the invoice
+
+This prevents "invoice already exists" errors when retrying dispatches.
+
+### File Changes
+
+| Package | File | Change |
+|---------|------|--------|
+| laravel-peppol | `src/Data/Invoice.php` | Added optional `paymentMethods` array |
+| laravel-peppol | `src/Connectors/ScradaConnector.php` | Pass payment methods to Scrada |
+| laravel-peppol | `src/PeppolService.php` | Check for existing connector ID before dispatching |
+| scrada-php-sdk | `src/Data/CreateSalesInvoiceData.php` | Added optional `paymentMethods` array |

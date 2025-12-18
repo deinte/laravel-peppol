@@ -806,6 +806,7 @@ class ScradaConnector implements PeppolConnector
             lines: $lines,
             alreadySentToCustomer: $invoice->alreadySentToCustomer,
             attachments: $attachments,
+            paymentMethods: $invoice->paymentMethods,
         );
     }
 

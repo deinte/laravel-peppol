@@ -238,6 +238,32 @@ class PeppolService
         ]);
 
         $connectorType = config('peppol.default_connector', 'scrada');
+        $existingConnectorId = $peppolInvoice->connector_invoice_id;
+
+        // If invoice already existed in connector (no real ID available), do nothing
+        if ($existingConnectorId && str_starts_with($existingConnectorId, 'existing:')) {
+            $this->log('info', 'Invoice already existed in connector - skipping dispatch', [
+                'peppol_invoice_id' => $peppolInvoice->id,
+                'connector_invoice_id' => $existingConnectorId,
+            ]);
+
+            return new InvoiceStatus(
+                connectorInvoiceId: $existingConnectorId,
+                status: $peppolInvoice->status,
+                updatedAt: $peppolInvoice->updated_at ? new \DateTimeImmutable($peppolInvoice->updated_at->toDateTimeString()) : new \DateTimeImmutable,
+                message: 'Invoice already existed in connector - no action taken',
+            );
+        }
+
+        // If invoice has a real connector ID, poll for status instead of re-sending
+        if ($existingConnectorId) {
+            $this->log('info', 'Invoice already has connector ID - polling for status', [
+                'peppol_invoice_id' => $peppolInvoice->id,
+                'connector_invoice_id' => $existingConnectorId,
+            ]);
+
+            return $this->getInvoiceStatus($peppolInvoice);
+        }
 
         // Capture the request payload (sanitized to remove base64 content)
         $requestPayload = $this->sanitizePayload($invoiceData->toArray());
@@ -319,6 +345,21 @@ class PeppolService
             ]);
 
             throw new \RuntimeException('Invoice has not been dispatched yet');
+        }
+
+        // Handle invoices that already existed in connector (we don't have a real ID to poll)
+        if (str_starts_with($peppolInvoice->connector_invoice_id, 'existing:')) {
+            $this->log('info', 'Invoice has existing: prefix - returning current status without polling', [
+                'peppol_invoice_id' => $peppolInvoice->id,
+                'connector_invoice_id' => $peppolInvoice->connector_invoice_id,
+            ]);
+
+            return new InvoiceStatus(
+                connectorInvoiceId: $peppolInvoice->connector_invoice_id,
+                status: $peppolInvoice->status,
+                updatedAt: $peppolInvoice->updated_at ? new \DateTimeImmutable($peppolInvoice->updated_at->toDateTimeString()) : new \DateTimeImmutable,
+                message: 'Invoice already existed in connector - status cannot be polled',
+            );
         }
 
         $status = $this->connector->getInvoiceStatus($peppolInvoice->connector_invoice_id);
