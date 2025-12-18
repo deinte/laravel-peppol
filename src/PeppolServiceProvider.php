@@ -10,7 +10,6 @@ use Deinte\Peppol\Commands\PollPeppolStatusCommand;
 use Deinte\Peppol\Connectors\ScradaConnector;
 use Deinte\Peppol\Contracts\PeppolConnector;
 use InvalidArgumentException;
-use RuntimeException;
 use Spatie\LaravelPackageTools\Package;
 use Spatie\LaravelPackageTools\PackageServiceProvider;
 
