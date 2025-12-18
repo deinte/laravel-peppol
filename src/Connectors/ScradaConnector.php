@@ -459,13 +459,13 @@ class ScradaConnector implements PeppolConnector
                     'duration_ms' => $duration,
                 ]);
 
-                // Return success status - invoice is in Scrada, just not newly created
-                // We use the invoice number as a placeholder ID since Scrada doesn't return the actual ID
+                // Return final status so it won't be polled
+                // We can't poll because Scrada doesn't return the actual invoice ID
                 return new InvoiceStatus(
                     connectorInvoiceId: "existing:{$invoice->invoiceNumber}",
-                    status: PeppolStatus::CREATED,
+                    status: PeppolStatus::DELIVERED_WITHOUT_CONFIRMATION,
                     updatedAt: new \DateTimeImmutable,
-                    message: 'Invoice already exists in Scrada',
+                    message: 'Invoice already exists in Scrada - status unknown',
                     metadata: [
                         'already_existed' => true,
                         'scrada_response' => $responseData,

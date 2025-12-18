@@ -169,6 +169,7 @@ class PeppolInvoice extends Model
         $finalStatuses = [
             PeppolStatus::ACCEPTED,
             PeppolStatus::REJECTED,
+            PeppolStatus::DELIVERED_WITHOUT_CONFIRMATION,
         ];
 
         return $query
