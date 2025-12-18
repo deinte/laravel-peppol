@@ -4,9 +4,10 @@ declare(strict_types=1);
 
 namespace Deinte\Peppol\Commands;
 
-use Deinte\Peppol\Enums\PeppolStatus;
+use Deinte\Peppol\Enums\PeppolState;
 use Deinte\Peppol\Models\PeppolInvoice;
 use Deinte\Peppol\PeppolService;
+use Exception;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -15,6 +16,7 @@ class PollPeppolStatusCommand extends Command
 {
     protected $signature = 'peppol:poll-status
                             {--dry-run : Show what would be polled without actually polling}
+                            {--force : Ignore next_retry_at schedule and poll immediately}
                             {--limit=100 : Maximum number of invoices to poll}
                             {--id= : Poll status for a specific PEPPOL invoice ID}
                             {--status : Show polling queue status only}';
@@ -43,20 +45,21 @@ class PollPeppolStatusCommand extends Command
     protected function pollAll(): int
     {
         $dryRun = (bool) $this->option('dry-run');
+        $force = (bool) $this->option('force');
         $limit = (int) $this->option('limit');
-        $maxAttempts = config('peppol.poll.max_attempts', 5);
 
         $this->log('info', 'Status poll command started', [
             'dry_run' => $dryRun,
+            'force' => $force,
             'limit' => $limit,
-            'max_attempts' => $maxAttempts,
         ]);
 
-        // First check count for user feedback
-        $totalCount = PeppolInvoice::query()
-            ->needsPolling($maxAttempts)
-            ->limit($limit)
-            ->count();
+        // Build query - use force to ignore schedule
+        $query = $force
+            ? $this->buildForceQuery()
+            : PeppolInvoice::query()->needsPolling();
+
+        $totalCount = (clone $query)->limit($limit)->count();
 
         if ($totalCount === 0) {
             $this->info('No invoices need status polling.');
@@ -67,18 +70,21 @@ class PollPeppolStatusCommand extends Command
 
         $this->info("Found {$totalCount} invoice(s) to poll.");
 
+        if ($force) {
+            $this->warn('FORCE MODE - Ignoring next_retry_at schedule.');
+        }
+
         if ($dryRun) {
             $this->warn('DRY RUN - No status will actually be polled.');
             $this->newLine();
         }
 
-        $stats = ['polled' => 0, 'updated' => 0, 'retries_scheduled' => 0, 'errors' => 0];
+        $stats = ['polled' => 0, 'updated' => 0, 'errors' => 0];
         $processed = 0;
 
         // Use chunking for memory efficiency on large datasets
-        PeppolInvoice::query()
-            ->needsPolling($maxAttempts)
-            ->select(['id', 'invoiceable_type', 'invoiceable_id', 'connector_invoice_id', 'status', 'poll_attempts', 'next_poll_at'])
+        $query
+            ->select(['id', 'invoiceable_type', 'invoiceable_id', 'connector_invoice_id', 'state', 'poll_attempts', 'next_retry_at'])
             ->with('invoiceable')
             ->chunkById(50, function ($invoices) use ($dryRun, &$stats, &$processed, $limit) {
                 foreach ($invoices as $invoice) {
@@ -108,51 +114,27 @@ class PollPeppolStatusCommand extends Command
         $info = "#{$invoice->id} (Connector: {$invoice->connector_invoice_id})";
 
         try {
-            $oldStatus = $invoice->status;
+            $oldState = $invoice->state;
             $status = $this->peppolService->getInvoiceStatus($invoice);
             $stats['polled']++;
 
-            if ($status->status !== $oldStatus) {
-                $this->outputStatusChange($info, $oldStatus, $status->status);
-                $stats['updated']++;
+            // Refresh to get updated state
+            $invoice->refresh();
+            $newState = $invoice->state;
 
-                // If status changed from failed to something else, reset poll attempts
-                if ($oldStatus === PeppolStatus::FAILED_DELIVERY && $status->status !== PeppolStatus::FAILED_DELIVERY) {
-                    $invoice->resetPollAttempts();
-                }
-            } elseif ($status->status === PeppolStatus::FAILED_DELIVERY) {
-                // Still failed - schedule retry
-                $stats = $this->handleFailedInvoice($invoice, $info, $stats);
+            if ($newState !== $oldState) {
+                $this->outputStateChange($info, $oldState, $newState);
+                $stats['updated']++;
             } else {
-                $this->line("  <comment>No change:</comment> {$info} - {$status->status->value}");
+                $this->line("  <comment>No change:</comment> {$info} - {$newState->label()}");
             }
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             $this->line("  <error>Failed:</error> {$info} - {$e->getMessage()}");
             $stats['errors']++;
 
             $this->log('error', 'Failed to poll status', [
                 'peppol_invoice_id' => $invoice->id,
                 'error' => $e->getMessage(),
-            ]);
-        }
-
-        return $stats;
-    }
-
-    protected function handleFailedInvoice(PeppolInvoice $invoice, string $info, array $stats): array
-    {
-        if ($invoice->hasExceededMaxPollAttempts()) {
-            $this->line("  <comment>Max retries:</comment> {$info} - No more retries (attempt {$invoice->poll_attempts})");
-        } else {
-            $invoice->scheduleNextPoll();
-            // Model attributes are updated in memory by scheduleNextPoll() - no fresh() needed
-            $this->line("  <comment>Retry scheduled:</comment> {$info} - Next poll at {$invoice->next_poll_at->format('d/m/Y H:i')}");
-            $stats['retries_scheduled']++;
-
-            $this->log('debug', 'Retry scheduled for failed invoice', [
-                'peppol_invoice_id' => $invoice->id,
-                'poll_attempts' => $invoice->poll_attempts,
-                'next_poll_at' => $invoice->next_poll_at,
             ]);
         }
 
@@ -178,8 +160,11 @@ class PollPeppolStatusCommand extends Command
         }
 
         try {
-            $oldStatus = $invoice->status;
+            $oldState = $invoice->state;
             $status = $this->peppolService->getInvoiceStatus($invoice);
+
+            // Refresh to get updated state
+            $invoice->refresh();
 
             $this->newLine();
             $this->table(
@@ -187,24 +172,26 @@ class PollPeppolStatusCommand extends Command
                 [
                     ['PEPPOL Invoice ID', $invoice->id],
                     ['Connector Invoice ID', $invoice->connector_invoice_id],
-                    ['Previous Status', $oldStatus->value],
-                    ['Current Status', $status->status->value],
-                    ['Status Changed', $status->status !== $oldStatus ? 'Yes' : 'No'],
+                    ['Previous State', $oldState->label()],
+                    ['Current State', $invoice->state->label()],
+                    ['State Changed', $invoice->state !== $oldState ? 'Yes' : 'No'],
+                    ['Connector Status', $status->status->value],
                     ['Message', $status->message ?? '-'],
                     ['Poll Attempts', $invoice->poll_attempts],
-                    ['Next Poll At', $invoice->next_poll_at?->format('d/m/Y H:i') ?? '-'],
-                    ['Last Updated', $invoice->updated_at->format('d/m/Y H:i:s')],
+                    ['Next Poll At', $invoice->next_retry_at?->format('d/m/Y H:i') ?? '-'],
+                    ['Sent At', $invoice->sent_at?->format('d/m/Y H:i:s') ?? '-'],
+                    ['Completed At', $invoice->completed_at?->format('d/m/Y H:i:s') ?? '-'],
                 ]
             );
 
-            if ($status->status !== $oldStatus) {
-                $this->info("Status updated: {$oldStatus->value} -> {$status->status->value}");
+            if ($invoice->state !== $oldState) {
+                $this->info("State updated: {$oldState->label()} -> {$invoice->state->label()}");
             } else {
-                $this->comment('No status change.');
+                $this->comment('No state change.');
             }
 
             return self::SUCCESS;
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             $this->error("Failed to poll status: {$e->getMessage()}");
 
             return self::FAILURE;
@@ -213,52 +200,56 @@ class PollPeppolStatusCommand extends Command
 
     protected function showStatus(): int
     {
-        $maxAttempts = config('peppol.poll.max_attempts', 5);
+        $maxPollAttempts = config('peppol.poll.max_attempts', 50);
         $tableName = (new PeppolInvoice)->getTable();
 
-        // Use single aggregate query to reduce from 7 queries to 1
+        $needsPolling = PeppolState::needsPollingValues();
+        $awaitingDelivery = PeppolState::awaitingDeliveryValues();
+
+        // Use single aggregate query for efficiency
         $stats = DB::table($tableName)
             ->selectRaw('
-                SUM(CASE WHEN status = ? AND dispatched_at IS NOT NULL THEN 1 ELSE 0 END) as pending,
-                SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) as delivered,
-                SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) as accepted,
-                SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) as rejected,
-                SUM(CASE WHEN status = ? AND poll_attempts < ? THEN 1 ELSE 0 END) as failed_retryable,
-                SUM(CASE WHEN status = ? AND poll_attempts >= ? THEN 1 ELSE 0 END) as failed_final
+                SUM(CASE WHEN state IN (?, ?) AND connector_invoice_id IS NOT NULL AND skip_delivery = 0 AND poll_attempts < ? THEN 1 ELSE 0 END) as needs_polling,
+                SUM(CASE WHEN state IN (?, ?) THEN 1 ELSE 0 END) as awaiting_delivery,
+                SUM(CASE WHEN state = ? THEN 1 ELSE 0 END) as delivered,
+                SUM(CASE WHEN state = ? THEN 1 ELSE 0 END) as accepted,
+                SUM(CASE WHEN state = ? THEN 1 ELSE 0 END) as rejected,
+                SUM(CASE WHEN state = ? THEN 1 ELSE 0 END) as failed,
+                SUM(CASE WHEN state = ? THEN 1 ELSE 0 END) as stored,
+                SUM(CASE WHEN state = ? THEN 1 ELSE 0 END) as cancelled
             ', [
-                PeppolStatus::PENDING->value,
-                PeppolStatus::DELIVERED_WITHOUT_CONFIRMATION->value,
-                PeppolStatus::ACCEPTED->value,
-                PeppolStatus::REJECTED->value,
-                PeppolStatus::FAILED_DELIVERY->value,
-                $maxAttempts,
-                PeppolStatus::FAILED_DELIVERY->value,
-                $maxAttempts,
+                ...$needsPolling,
+                $maxPollAttempts,
+                ...$awaitingDelivery,
+                PeppolState::DELIVERED->value,
+                PeppolState::ACCEPTED->value,
+                PeppolState::REJECTED->value,
+                PeppolState::FAILED->value,
+                PeppolState::STORED->value,
+                PeppolState::CANCELLED->value,
             ])
             ->first();
-
-        // needsPolling uses complex scope logic, keep as separate optimized count
-        $needsPolling = PeppolInvoice::query()->needsPolling($maxAttempts)->count();
 
         $this->info('PEPPOL Invoice Status Overview');
         $this->newLine();
 
         $this->table(
-            ['Status', 'Count'],
+            ['State', 'Count'],
             [
-                ['Needs polling now', $needsPolling],
-                ['Pending (dispatched)', (int) $stats->pending],
-                ['Delivered (awaiting confirmation)', (int) $stats->delivered],
-                ['Accepted (final)', (int) $stats->accepted],
-                ['Rejected (final)', (int) $stats->rejected],
-                ['Failed (retryable)', (int) $stats->failed_retryable],
-                ['Failed (max retries)', (int) $stats->failed_final],
+                ['Needs polling now', (int) $stats->needs_polling],
+                ['Awaiting delivery (sent/polling)', (int) $stats->awaiting_delivery],
+                ['Delivered', (int) $stats->delivered],
+                ['Accepted', (int) $stats->accepted],
+                ['Rejected', (int) $stats->rejected],
+                ['Failed', (int) $stats->failed],
+                ['Stored (skip_delivery)', (int) $stats->stored],
+                ['Cancelled', (int) $stats->cancelled],
             ]
         );
 
-        if ($needsPolling > 0) {
+        if ($stats->needs_polling > 0) {
             $this->newLine();
-            $this->comment("Run 'php artisan peppol:poll-status' to poll {$needsPolling} invoice(s)");
+            $this->comment("Run 'php artisan peppol:poll-status' to poll {$stats->needs_polling} invoice(s)");
         }
 
         return self::SUCCESS;
@@ -266,21 +257,21 @@ class PollPeppolStatusCommand extends Command
 
     protected function outputDryRun(PeppolInvoice $invoice): void
     {
-        $retryInfo = $invoice->status === PeppolStatus::FAILED_DELIVERY
-            ? " (retry {$invoice->poll_attempts})"
+        $attemptInfo = $invoice->poll_attempts > 0
+            ? " (attempt #{$invoice->poll_attempts})"
             : '';
 
-        $this->line("  Would poll: #{$invoice->id} - Current: {$invoice->status->value}{$retryInfo}");
+        $this->line("  Would poll: #{$invoice->id} - State: {$invoice->state->label()}{$attemptInfo}");
     }
 
-    protected function outputStatusChange(string $info, PeppolStatus $old, PeppolStatus $new): void
+    protected function outputStateChange(string $info, PeppolState $old, PeppolState $new): void
     {
-        $this->line("  <info>Updated:</info> {$info} - {$old->value} -> {$new->value}");
+        $this->line("  <info>Updated:</info> {$info} - {$old->label()} -> {$new->label()}");
 
-        $this->log('info', 'Invoice status updated', [
+        $this->log('info', 'Invoice state updated', [
             'info' => $info,
-            'old_status' => $old->value,
-            'new_status' => $new->value,
+            'old_state' => $old->value,
+            'new_state' => $new->value,
         ]);
     }
 
@@ -291,15 +282,27 @@ class PollPeppolStatusCommand extends Command
         if (! $dryRun) {
             $this->info("Polled: {$stats['polled']}");
             $this->info("Updated: {$stats['updated']}");
-            if ($stats['retries_scheduled'] > 0) {
-                $this->comment("Retries scheduled: {$stats['retries_scheduled']}");
-            }
             if ($stats['errors'] > 0) {
                 $this->error("Errors: {$stats['errors']}");
             }
 
             $this->log('info', 'Status poll command completed', $stats);
         }
+    }
+
+    /**
+     * Build query for force mode (ignores next_retry_at schedule).
+     */
+    private function buildForceQuery(): \Illuminate\Database\Eloquent\Builder
+    {
+        $maxPollAttempts = config('peppol.poll.max_attempts', 50);
+
+        return PeppolInvoice::query()
+            ->whereIn('state', [PeppolState::SENT, PeppolState::POLLING])
+            ->whereNotNull('connector_invoice_id')
+            ->where('skip_delivery', false)
+            ->where('poll_attempts', '<', $maxPollAttempts);
+        // Note: intentionally omits next_retry_at check
     }
 
     private function log(string $level, string $message, array $context = []): void

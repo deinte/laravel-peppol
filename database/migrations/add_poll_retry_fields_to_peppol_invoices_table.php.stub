@@ -8,12 +8,18 @@ return new class extends Migration
 {
     public function up(): void
     {
-        Schema::table('peppol_invoices', function (Blueprint $table) {
-            $table->unsignedTinyInteger('poll_attempts')->default(0)->after('status_message');
-            $table->timestamp('next_poll_at')->nullable()->after('poll_attempts');
+        if (! Schema::hasColumn('peppol_invoices', 'poll_attempts')) {
+            Schema::table('peppol_invoices', function (Blueprint $table) {
+                $table->unsignedTinyInteger('poll_attempts')->default(0)->after('status_message');
+            });
+        }
 
-            $table->index('next_poll_at');
-        });
+        if (! Schema::hasColumn('peppol_invoices', 'next_poll_at')) {
+            Schema::table('peppol_invoices', function (Blueprint $table) {
+                $table->timestamp('next_poll_at')->nullable()->after('poll_attempts');
+                $table->index('next_poll_at');
+            });
+        }
     }
 
     public function down(): void

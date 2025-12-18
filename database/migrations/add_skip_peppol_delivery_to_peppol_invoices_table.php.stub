@@ -8,11 +8,13 @@ return new class extends Migration
 {
     public function up(): void
     {
-        Schema::table('peppol_invoices', function (Blueprint $table) {
-            // When true, invoice is stored in connector but NOT sent via PEPPOL network
-            // This happens when peppol_enabled is false or recipient not on PEPPOL
-            $table->boolean('skip_peppol_delivery')->default(false)->after('status');
-        });
+        if (! Schema::hasColumn('peppol_invoices', 'skip_peppol_delivery')) {
+            Schema::table('peppol_invoices', function (Blueprint $table) {
+                // When true, invoice is stored in connector but NOT sent via PEPPOL network
+                // This happens when peppol_enabled is false or recipient not on PEPPOL
+                $table->boolean('skip_peppol_delivery')->default(false)->after('status');
+            });
+        }
     }
 
     public function down(): void

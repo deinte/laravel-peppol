@@ -9,21 +9,30 @@ use Deinte\Peppol\Events\InvoiceDispatched;
 use Deinte\Peppol\Events\InvoiceFailed;
 use Deinte\Peppol\Models\PeppolInvoice;
 use Deinte\Peppol\PeppolService;
+use Exception;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Log;
+use Throwable;
 
 /**
- * Dispatches a PEPPOL invoice to the network.
+ * Dispatches a PEPPOL invoice to the connector.
+ *
+ * This job handles the transformation and dispatch of an invoice.
+ * Retry logic is managed by the PeppolInvoice model (dispatch_attempts).
  */
 class DispatchPeppolInvoice implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
-    public int $tries = 3;
+    /**
+     * Job retries are handled by the model's dispatch_attempts.
+     * This job should only run once per dispatch.
+     */
+    public int $tries = 1;
 
     public function __construct(
         public readonly int $peppolInvoiceId,
@@ -40,8 +49,6 @@ class DispatchPeppolInvoice implements ShouldQueue
     {
         $this->log('info', 'Job started', [
             'peppol_invoice_id' => $this->peppolInvoiceId,
-            'attempt' => $this->attempts(),
-            'max_tries' => $this->tries,
         ]);
 
         $peppolInvoice = PeppolInvoice::find($this->peppolInvoiceId);
@@ -54,11 +61,24 @@ class DispatchPeppolInvoice implements ShouldQueue
             return;
         }
 
-        // Skip if already dispatched
-        if ($peppolInvoice->dispatched_at) {
+        // Skip if already dispatched (has connector ID and is not in a retryable state)
+        if ($peppolInvoice->connector_invoice_id && ! $peppolInvoice->state->canRetryDispatch()) {
             $this->log('info', 'Invoice already dispatched - skipping', [
                 'peppol_invoice_id' => $this->peppolInvoiceId,
-                'dispatched_at' => $peppolInvoice->dispatched_at->toIso8601String(),
+                'state' => $peppolInvoice->state->value,
+                'connector_invoice_id' => $peppolInvoice->connector_invoice_id,
+            ]);
+
+            return;
+        }
+
+        // Skip if not ready to dispatch (future scheduled_at or retry time)
+        if (! $peppolInvoice->isReadyToDispatch()) {
+            $this->log('info', 'Invoice not ready for dispatch - skipping', [
+                'peppol_invoice_id' => $this->peppolInvoiceId,
+                'state' => $peppolInvoice->state->value,
+                'scheduled_at' => $peppolInvoice->scheduled_at?->toIso8601String(),
+                'next_retry_at' => $peppolInvoice->next_retry_at?->toIso8601String(),
             ]);
 
             return;
@@ -81,6 +101,7 @@ class DispatchPeppolInvoice implements ShouldQueue
             'peppol_invoice_id' => $this->peppolInvoiceId,
             'invoiceable_type' => $peppolInvoice->invoiceable_type,
             'invoiceable_id' => $peppolInvoice->invoiceable_id,
+            'dispatch_attempt' => $peppolInvoice->dispatch_attempts + 1,
         ]);
 
         try {
@@ -100,7 +121,7 @@ class DispatchPeppolInvoice implements ShouldQueue
                 'line_items_count' => count($invoiceData->lineItems),
             ]);
 
-            // Dispatch via service
+            // Dispatch via service (handles state transitions internally)
             $this->log('info', 'Dispatching invoice via PeppolService', [
                 'peppol_invoice_id' => $this->peppolInvoiceId,
             ]);
@@ -116,16 +137,20 @@ class DispatchPeppolInvoice implements ShouldQueue
                 'peppol_invoice_id' => $this->peppolInvoiceId,
                 'connector_invoice_id' => $status->connectorInvoiceId,
                 'status' => $status->status->value,
-                'attempt' => $this->attempts(),
+                'state' => $peppolInvoice->fresh()->state->value,
             ]);
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
+            // State transition (send_failed or failed) is handled by PeppolService
+            $peppolInvoice->refresh();
+
             $this->log('error', 'Job failed', [
                 'peppol_invoice_id' => $this->peppolInvoiceId,
-                'attempt' => $this->attempts(),
-                'max_tries' => $this->tries,
+                'dispatch_attempts' => $peppolInvoice->dispatch_attempts,
+                'state' => $peppolInvoice->state->value,
+                'can_retry' => $peppolInvoice->canRetry(),
+                'next_retry_at' => $peppolInvoice->next_retry_at?->toIso8601String(),
                 'error' => $e->getMessage(),
                 'exception_class' => $e::class,
-                'trace' => $e->getTraceAsString(),
             ]);
 
             // Fire failure event
@@ -133,23 +158,15 @@ class DispatchPeppolInvoice implements ShouldQueue
                 event(new InvoiceFailed($peppolInvoice, $e->getMessage()));
             }
 
-            // Re-throw to trigger retry
-            throw $e;
+            // Don't re-throw - the model tracks state and will be picked up
+            // by the dispatch command for retry if canRetry() is true
         }
     }
 
-    public function backoff(): array
+    public function failed(?Throwable $exception): void
     {
-        $retryDelay = config('peppol.dispatch.retry_delay_minutes', 60);
-
-        return [$retryDelay * 60, $retryDelay * 120, $retryDelay * 180];
-    }
-
-    public function failed(?\Throwable $exception): void
-    {
-        $this->log('error', 'Job permanently failed after all retries', [
+        $this->log('error', 'Job permanently failed', [
             'peppol_invoice_id' => $this->peppolInvoiceId,
-            'attempts' => $this->attempts(),
             'error' => $exception?->getMessage(),
             'exception_class' => $exception ? $exception::class : null,
         ]);

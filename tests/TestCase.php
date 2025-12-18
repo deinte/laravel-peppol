@@ -6,7 +6,6 @@ namespace Deinte\Peppol\Tests;
 
 use Deinte\Peppol\PeppolServiceProvider;
 use Illuminate\Database\Eloquent\Factories\Factory;
-use Illuminate\Support\Facades\Schema;
 use Orchestra\Testbench\TestCase as Orchestra;
 
 class TestCase extends Orchestra
@@ -53,7 +52,12 @@ class TestCase extends Orchestra
             'dispatch' => [
                 'delay_days' => 7,
                 'queue' => 'default',
-                'retry_delay_minutes' => 60,
+                'max_attempts' => 3,
+                'retry_delays' => [5, 15, 60],
+            ],
+            'poll' => [
+                'max_attempts' => 50,
+                'retry_delays' => [1, 4, 12, 24, 48],
             ],
             'events' => [
                 'invoice_dispatched' => true,
@@ -68,62 +72,35 @@ class TestCase extends Orchestra
             'level' => 'debug',
         ]);
 
-        // Run migrations manually from stub files
+        // Run migrations from stub files in correct order
         $this->runMigrations();
     }
 
     protected function runMigrations(): void
     {
-        // Create peppol_companies table
-        Schema::create('peppol_companies', function ($table) {
-            $table->id();
-            $table->string('vat_number')->unique();
-            $table->string('peppol_id')->nullable()->index();
-            $table->string('name')->nullable();
-            $table->string('country', 2)->nullable();
-            $table->string('email')->nullable();
-            $table->string('tax_number')->nullable();
-            $table->string('tax_number_scheme', 4)->nullable();
-            $table->boolean('is_active')->default(true);
-            $table->json('metadata')->nullable();
-            $table->timestamp('last_lookup_at')->nullable();
-            $table->timestamps();
-        });
+        $migrationsPath = __DIR__.'/../database/migrations';
 
-        // Create peppol_invoices table
-        Schema::create('peppol_invoices', function ($table) {
-            $table->id();
-            $table->morphs('invoiceable');
-            $table->unsignedBigInteger('recipient_peppol_company_id')->nullable()->index();
-            $table->string('connector_invoice_id')->nullable()->index();
-            $table->string('connector_type')->nullable();
-            $table->string('connector_status')->default('PENDING');
-            $table->text('connector_error')->nullable();
-            $table->timestamp('connector_uploaded_at')->nullable();
-            $table->string('status')->default('PENDING')->index();
-            $table->boolean('skip_peppol_delivery')->default(false);
-            $table->text('status_message')->nullable();
-            $table->unsignedInteger('poll_attempts')->default(0);
-            $table->timestamp('next_poll_at')->nullable()->index();
-            $table->timestamp('scheduled_dispatch_at')->nullable()->index();
-            $table->timestamp('dispatched_at')->nullable();
-            $table->timestamp('delivered_at')->nullable();
-            $table->json('metadata')->nullable();
-            $table->json('request_payload')->nullable();
-            $table->json('poll_response')->nullable();
-            $table->timestamps();
-            $table->index(['dispatched_at', 'scheduled_dispatch_at']);
-        });
+        // Define migration order - base tables first, then modifications
+        $migrationOrder = [
+            'create_peppol_companies_table.php.stub',
+            'create_peppol_invoices_table.php.stub',
+            'create_peppol_invoice_statuses_table.php.stub',
+            'add_skip_peppol_delivery_to_peppol_invoices_table.php.stub',
+            'add_tax_number_fields_to_peppol_companies_table.php.stub',
+            'add_connector_tracking_to_peppol_invoices_table.php.stub',
+            'add_poll_retry_fields_to_peppol_invoices_table.php.stub',
+            'add_polling_indexes_to_peppol_invoices_table.php.stub',
+            'add_payload_columns_to_peppol_invoices_table.php.stub',
+            'simplify_peppol_schema.php.stub',
+        ];
 
-        // Create peppol_invoice_statuses table
-        Schema::create('peppol_invoice_statuses', function ($table) {
-            $table->id();
-            $table->unsignedBigInteger('peppol_invoice_id')->index();
-            $table->string('status')->index();
-            $table->text('message')->nullable();
-            $table->json('metadata')->nullable();
-            $table->timestamps();
-            $table->index(['peppol_invoice_id', 'created_at']);
-        });
+        foreach ($migrationOrder as $stubFile) {
+            $fullPath = "{$migrationsPath}/{$stubFile}";
+
+            if (file_exists($fullPath)) {
+                $migration = require $fullPath;
+                $migration->up();
+            }
+        }
     }
 }

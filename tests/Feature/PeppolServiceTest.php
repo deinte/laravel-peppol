@@ -7,6 +7,7 @@ use Deinte\Peppol\Data\Company;
 use Deinte\Peppol\Data\Invoice;
 use Deinte\Peppol\Data\InvoiceStatus;
 use Deinte\Peppol\Enums\EasCode;
+use Deinte\Peppol\Enums\PeppolState;
 use Deinte\Peppol\Enums\PeppolStatus;
 use Deinte\Peppol\Models\PeppolCompany;
 use Deinte\Peppol\Models\PeppolInvoice;
@@ -133,8 +134,9 @@ describe('PeppolService', function () {
                 country: 'BE',
             );
 
-            expect($result->tax_number)->toBe('0123456789');
-            expect($result->tax_number_scheme)->toBe(EasCode::BE_CBE);
+            // PeppolCompany no longer stores tax_number - just verify the lookup succeeded
+            expect($result)->not->toBeNull();
+            expect($result->peppol_id)->toBe('0208:0123456789');
         });
 
         it('returns null when connector returns null', function () {
@@ -163,7 +165,7 @@ describe('PeppolService', function () {
             $this->mockConnector->shouldNotReceive('lookupCompany');
 
             // Create a fake invoiceable model
-            $invoice = new class extends \Illuminate\Database\Eloquent\Model
+            $invoice = new class extends Illuminate\Database\Eloquent\Model
             {
                 protected $table = 'test_invoices';
 
@@ -182,11 +184,11 @@ describe('PeppolService', function () {
 
             expect($peppolInvoice)->toBeInstanceOf(PeppolInvoice::class);
             expect($peppolInvoice->recipient_peppol_company_id)->toBe($recipient->id);
-            expect($peppolInvoice->status)->toBe(PeppolStatus::PENDING);
-            expect($peppolInvoice->scheduled_dispatch_at)->not->toBeNull();
+            expect($peppolInvoice->state)->toBe(PeppolState::SCHEDULED);
+            expect($peppolInvoice->scheduled_at)->not->toBeNull();
         });
 
-        it('schedules invoice with skip_peppol_delivery when recipient not on PEPPOL', function () {
+        it('schedules invoice with skip_delivery only when explicitly set', function () {
             // Create recipient company without peppol_id
             PeppolCompany::create([
                 'vat_number' => 'XX999999999',
@@ -195,7 +197,7 @@ describe('PeppolService', function () {
                 'last_lookup_at' => now(),
             ]);
 
-            $invoice = new class extends \Illuminate\Database\Eloquent\Model
+            $invoice = new class extends Illuminate\Database\Eloquent\Model
             {
                 protected $table = 'test_invoices';
 
@@ -207,11 +209,16 @@ describe('PeppolService', function () {
                 }
             };
 
+            // Without explicit skip_delivery, defaults to false (let Scrada handle routing)
             $peppolInvoice = $this->service->scheduleInvoice($invoice, 'XX999999999');
 
             expect($peppolInvoice)->toBeInstanceOf(PeppolInvoice::class);
-            expect($peppolInvoice->skip_peppol_delivery)->toBeTrue();
-            expect($peppolInvoice->status)->toBe(PeppolStatus::PENDING);
+            expect($peppolInvoice->skip_delivery)->toBeFalse();
+            expect($peppolInvoice->state)->toBe(PeppolState::SCHEDULED);
+
+            // With explicit skip_delivery=true
+            $peppolInvoice2 = $this->service->scheduleInvoice($invoice, 'XX999999999', skipDelivery: true);
+            expect($peppolInvoice2->skip_delivery)->toBeTrue();
         });
     });
 
@@ -227,7 +234,7 @@ describe('PeppolService', function () {
                 'invoiceable_type' => 'App\\Models\\Invoice',
                 'invoiceable_id' => 1,
                 'recipient_peppol_company_id' => $recipient->id,
-                'status' => PeppolStatus::PENDING,
+                'state' => PeppolState::SCHEDULED,
             ]);
 
             $invoiceData = new Invoice(
@@ -259,7 +266,102 @@ describe('PeppolService', function () {
 
             $peppolInvoice->refresh();
             expect($peppolInvoice->connector_invoice_id)->toBe('SCRADA-123');
-            expect($peppolInvoice->dispatched_at)->not->toBeNull();
+            expect($peppolInvoice->sent_at)->not->toBeNull();
+            expect($peppolInvoice->state)->toBe(PeppolState::SENT);
+        });
+
+        it('transitions to SENT state for non-PEPPOL recipients and lets polling determine final state', function () {
+            // Create recipient company WITHOUT peppol_id (not on PEPPOL)
+            // Note: We don't pre-decide based on cached PEPPOL status - Scrada handles routing
+            $recipient = PeppolCompany::create([
+                'vat_number' => 'XX999999999',
+                'peppol_id' => null,
+                'last_lookup_at' => now(),
+            ]);
+
+            $peppolInvoice = PeppolInvoice::create([
+                'invoiceable_type' => 'App\\Models\\Invoice',
+                'invoiceable_id' => 1,
+                'recipient_peppol_company_id' => $recipient->id,
+                'state' => PeppolState::SCHEDULED,
+            ]);
+
+            $invoiceData = new Invoice(
+                senderVatNumber: 'BE0123456789',
+                recipientVatNumber: 'XX999999999',
+                recipientPeppolId: null,
+                invoiceNumber: 'INV-002',
+                invoiceDate: new DateTimeImmutable,
+                dueDate: new DateTimeImmutable('+30 days'),
+                totalAmount: 1000.00,
+                currency: 'EUR',
+                lineItems: [],
+            );
+
+            $this->mockConnector->shouldReceive('sendInvoice')
+                ->once()
+                ->with($invoiceData)
+                ->andReturn(new InvoiceStatus(
+                    connectorInvoiceId: 'SCRADA-456',
+                    status: PeppolStatus::DELIVERED_WITHOUT_CONFIRMATION,
+                    updatedAt: new DateTimeImmutable,
+                    message: 'Stored in connector',
+                ));
+
+            $result = $this->service->dispatchInvoice($peppolInvoice, $invoiceData);
+
+            $peppolInvoice->refresh();
+            // Goes to SENT first - polling will transition to STORED when Scrada reports recipientNotOnPeppol
+            expect($peppolInvoice->state)->toBe(PeppolState::SENT);
+            expect($peppolInvoice->connector_invoice_id)->toBe('SCRADA-456');
+            expect($peppolInvoice->sent_at)->not->toBeNull();
+            expect($peppolInvoice->completed_at)->toBeNull(); // Not completed until polling determines final state
+
+            // Will be polled to determine final state
+            expect($peppolInvoice->needsPolling())->toBeTrue();
+        });
+
+        it('transitions to STORED state when skip_delivery is true', function () {
+            $recipient = PeppolCompany::create([
+                'vat_number' => 'NL123456789B01',
+                'peppol_id' => '0106:12345678',
+                'last_lookup_at' => now(),
+            ]);
+
+            $peppolInvoice = PeppolInvoice::create([
+                'invoiceable_type' => 'App\\Models\\Invoice',
+                'invoiceable_id' => 1,
+                'recipient_peppol_company_id' => $recipient->id,
+                'state' => PeppolState::SCHEDULED,
+                'skip_delivery' => true,
+            ]);
+
+            $invoiceData = new Invoice(
+                senderVatNumber: 'BE0123456789',
+                recipientVatNumber: 'NL123456789B01',
+                recipientPeppolId: '0106:12345678',
+                invoiceNumber: 'INV-003',
+                invoiceDate: new DateTimeImmutable,
+                dueDate: new DateTimeImmutable('+30 days'),
+                totalAmount: 1000.00,
+                currency: 'EUR',
+                lineItems: [],
+            );
+
+            $this->mockConnector->shouldReceive('sendInvoice')
+                ->once()
+                ->andReturn(new InvoiceStatus(
+                    connectorInvoiceId: 'SCRADA-789',
+                    status: PeppolStatus::DELIVERED_WITHOUT_CONFIRMATION,
+                    updatedAt: new DateTimeImmutable,
+                ));
+
+            $result = $this->service->dispatchInvoice($peppolInvoice, $invoiceData);
+
+            $peppolInvoice->refresh();
+            expect($peppolInvoice->state)->toBe(PeppolState::STORED);
+            expect($peppolInvoice->completed_at)->not->toBeNull();
+            expect($peppolInvoice->needsPolling())->toBeFalse();
         });
     });
 
@@ -276,8 +378,8 @@ describe('PeppolService', function () {
                 'invoiceable_id' => 1,
                 'recipient_peppol_company_id' => $recipient->id,
                 'connector_invoice_id' => 'SCRADA-123',
-                'status' => PeppolStatus::PENDING,
-                'dispatched_at' => now(),
+                'state' => PeppolState::SENT,
+                'sent_at' => now(),
             ]);
 
             $this->mockConnector->shouldReceive('getInvoiceStatus')
@@ -294,7 +396,7 @@ describe('PeppolService', function () {
             expect($result->status)->toBe(PeppolStatus::ACCEPTED);
 
             $peppolInvoice->refresh();
-            expect($peppolInvoice->status)->toBe(PeppolStatus::ACCEPTED);
+            expect($peppolInvoice->state)->toBe(PeppolState::ACCEPTED);
         });
 
         it('throws exception if invoice not dispatched', function () {
@@ -308,7 +410,7 @@ describe('PeppolService', function () {
                 'invoiceable_type' => 'App\\Models\\Invoice',
                 'invoiceable_id' => 1,
                 'recipient_peppol_company_id' => $recipient->id,
-                'status' => PeppolStatus::PENDING,
+                'state' => PeppolState::SCHEDULED,
             ]);
 
             expect(fn () => $this->service->getInvoiceStatus($peppolInvoice))
@@ -329,8 +431,8 @@ describe('PeppolService', function () {
                 'invoiceable_id' => 1,
                 'recipient_peppol_company_id' => $recipient->id,
                 'connector_invoice_id' => 'SCRADA-123',
-                'status' => PeppolStatus::DELIVERED_WITHOUT_CONFIRMATION,
-                'dispatched_at' => now(),
+                'state' => PeppolState::DELIVERED,
+                'sent_at' => now(),
             ]);
 
             $expectedUbl = '<?xml version="1.0"?><Invoice>...</Invoice>';
@@ -356,7 +458,7 @@ describe('PeppolService', function () {
                 'invoiceable_type' => 'App\\Models\\Invoice',
                 'invoiceable_id' => 1,
                 'recipient_peppol_company_id' => $recipient->id,
-                'status' => PeppolStatus::PENDING,
+                'state' => PeppolState::SCHEDULED,
             ]);
 
             expect(fn () => $this->service->getUblFile($peppolInvoice))

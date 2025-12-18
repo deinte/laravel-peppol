@@ -110,16 +110,11 @@ return [
 
     'poll' => [
         // Maximum number of poll retry attempts for failed invoices
-        'max_attempts' => env('PEPPOL_POLL_MAX_ATTEMPTS', 5),
+        'max_attempts' => env('PEPPOL_POLL_MAX_ATTEMPTS', 50),
 
-        // Hours to wait between retry attempts (exponential backoff)
-        // Example: [1, 4, 12, 24, 48] means:
-        // - 1st retry after 1 hour
-        // - 2nd retry after 4 hours
-        // - 3rd retry after 12 hours
-        // - 4th retry after 24 hours
-        // - 5th retry after 48 hours
-        'retry_delays' => [1, 4, 12, 24, 48],
+        // Minutes to wait between retry attempts (progressive backoff)
+        // 1min, 5min, 10min, 30min, 1hr, 6hr, 24hr, 7 days
+        'retry_delays_minutes' => [1, 5, 10, 30, 60, 360, 1440, 10080],
     ],
 
     /*
@@ -147,9 +142,9 @@ return [
     */
 
     'models' => [
-        'company' => \Deinte\Peppol\Models\PeppolCompany::class,
-        'invoice' => \Deinte\Peppol\Models\PeppolInvoice::class,
-        'invoice_status' => \Deinte\Peppol\Models\PeppolInvoiceStatus::class,
+        'company' => Deinte\Peppol\Models\PeppolCompany::class,
+        'invoice' => Deinte\Peppol\Models\PeppolInvoice::class,
+        'invoice_status' => Deinte\Peppol\Models\PeppolInvoiceStatus::class,
     ],
 
     /*

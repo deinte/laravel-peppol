@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Deinte\Peppol\Connectors;
 
+use DateTimeImmutable;
 use Deinte\Peppol\Contracts\PeppolConnector;
 use Deinte\Peppol\Data\Company;
 use Deinte\Peppol\Data\Invoice;
@@ -13,16 +14,22 @@ use Deinte\Peppol\Enums\PeppolStatus;
 use Deinte\Peppol\Exceptions\ConnectorException;
 use Deinte\Peppol\Exceptions\InvalidInvoiceException;
 use Deinte\Peppol\Exceptions\InvoiceNotFoundException;
-use Deinte\ScradaSdk\Data\Address;
-use Deinte\ScradaSdk\Data\Attachment;
-use Deinte\ScradaSdk\Data\CreateSalesInvoiceData;
-use Deinte\ScradaSdk\Data\Customer;
-use Deinte\ScradaSdk\Data\InvoiceLine;
-use Deinte\ScradaSdk\Data\SendStatus;
+use Deinte\ScradaSdk\Data\Common\Address;
+use Deinte\ScradaSdk\Data\Common\Attachment;
+use Deinte\ScradaSdk\Data\Common\Customer;
+use Deinte\ScradaSdk\Data\SalesInvoice\CreateSalesInvoiceData;
+use Deinte\ScradaSdk\Data\SalesInvoice\InvoiceLine;
+use Deinte\ScradaSdk\Data\SalesInvoice\SendStatusResponse;
+use Deinte\ScradaSdk\Enums\SendStatus;
+use Deinte\ScradaSdk\Enums\TaxNumberType;
+use Deinte\ScradaSdk\Enums\VatType;
 use Deinte\ScradaSdk\Exceptions\NotFoundException;
 use Deinte\ScradaSdk\Exceptions\ScradaException;
 use Deinte\ScradaSdk\Scrada;
+use Exception;
 use Illuminate\Support\Facades\Log;
+use InvalidArgumentException;
+use RuntimeException;
 
 /**
  * Scrada implementation of the PEPPOL connector.
@@ -31,12 +38,6 @@ use Illuminate\Support\Facades\Log;
  */
 class ScradaConnector implements PeppolConnector
 {
-    private const SCRADA_TAX_TYPE_BE_CBE = 1;
-
-    private const SCRADA_TAX_TYPE_NL_KVK = 2;
-
-    private const SCRADA_TAX_TYPE_FR_SIRET = 3;
-
     private readonly Scrada $client;
 
     public function __construct(
@@ -105,13 +106,13 @@ class ScradaConnector implements PeppolConnector
 
         try {
             // First attempt: lookup by tax number (enterprise number) if applicable
-            $payload = $this->buildLookupPayload($lookupIdentifier, $lookupScheme, $vatNumber);
+            $customerForLookup = $this->buildLookupCustomer($lookupIdentifier, $lookupScheme, $vatNumber);
 
-            $this->log('debug', 'API: Scrada lookupParty payload', [
-                'payload' => $payload,
+            $this->log('debug', 'API: Scrada lookupParty customer', [
+                'customer' => $customerForLookup->toArray(),
             ]);
 
-            $result = $this->client->peppol()->lookupParty($payload);
+            $result = $this->client->peppol()->lookupParty($customerForLookup);
 
             $duration = round((microtime(true) - $startTime) * 1000, 2);
 
@@ -206,7 +207,7 @@ class ScradaConnector implements PeppolConnector
             ]);
 
             throw ConnectorException::apiError($e->getMessage(), $e->getCode(), $responseData);
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             $duration = round((microtime(true) - $startTime) * 1000, 2);
 
             $this->log('error', 'API: Connection failed during company lookup', [
@@ -268,33 +269,32 @@ class ScradaConnector implements PeppolConnector
         $vatScheme = null;
         try {
             $vatScheme = EasCode::vatSchemeForCountry($effectiveCountry);
-        } catch (\InvalidArgumentException) {
+        } catch (InvalidArgumentException) {
             // No VAT scheme for country
         }
 
-        $payload = [
-            'name' => 'Lookup',
-            'address' => [
-                'street' => '-',
-                'streetNumber' => '-',
-                'city' => '-',
-                'zipCode' => '-',
-                'countryCode' => $effectiveCountry,
-            ],
-            'vatNumber' => $vatNumber,
-        ];
+        // Build peppolID in standard format if we have a VAT scheme
+        $peppolID = $vatScheme !== null ? "{$vatScheme->value}:{$vatNumber}" : null;
 
-        // Include the PEPPOL participant ID in standard format
-        if ($vatScheme !== null) {
-            $payload['peppolId'] = "{$vatScheme->value}:{$vatNumber}";
-        }
+        $customer = new Customer(
+            name: 'Lookup',
+            address: new Address(
+                street: '-',
+                streetNumber: '-',
+                city: '-',
+                zipCode: '-',
+                countryCode: $effectiveCountry,
+            ),
+            peppolID: $peppolID,
+            vatNumber: $vatNumber,
+        );
 
-        $this->log('debug', 'API: Scrada lookupParty VAT fallback payload', [
-            'payload' => $payload,
+        $this->log('debug', 'API: Scrada lookupParty VAT fallback customer', [
+            'customer' => $customer->toArray(),
         ]);
 
         try {
-            $result = $this->client->peppol()->lookupParty($payload);
+            $result = $this->client->peppol()->lookupParty($customer);
 
             $this->log('debug', 'API: Scrada lookupParty VAT fallback response', [
                 'vat_number' => $vatNumber,
@@ -303,7 +303,7 @@ class ScradaConnector implements PeppolConnector
             ]);
 
             return $result;
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             $this->log('warning', 'API: VAT fallback lookup failed', [
                 'vat_number' => $vatNumber,
                 'error' => $e->getMessage(),
@@ -314,57 +314,47 @@ class ScradaConnector implements PeppolConnector
     }
 
     /**
-     * Build the Scrada lookup payload based on the scheme.
+     * Build a Customer object for PEPPOL lookup.
      *
-     * Uses the PEPPOL participant identifier format: {EAS_CODE}:{IDENTIFIER}
-     * For example: 0208:0833557226 (Belgian enterprise number)
-     *              9925:BE0833557226 (Belgian VAT number)
+     * Uses tax number lookup for BE/NL/FR when applicable, falls back to VAT number.
      */
-    private function buildLookupPayload(string $identifier, ?EasCode $scheme, string $vatNumber): array
+    private function buildLookupCustomer(string $identifier, ?EasCode $scheme, string $vatNumber): Customer
     {
         $countryCode = $scheme?->countryCode() ?? $this->guessCountryFromVat($vatNumber) ?? 'BE';
-
-        $payload = [
-            'name' => 'Lookup',
-            'address' => [
-                'street' => '-',
-                'streetNumber' => '-',
-                'city' => '-',
-                'zipCode' => '-',
-                'countryCode' => $countryCode,
-            ],
-        ];
-
         $taxNumberType = $this->mapEasSchemeToScradaTaxType($scheme);
 
-        if ($taxNumberType !== null) {
-            $payload['taxNumberType'] = $taxNumberType;
-            $payload['taxNumber'] = $identifier;
-        } else {
-            $payload['vatNumber'] = $vatNumber;
-        }
+        // Build peppolID in standard format (e.g., "0208:0833557226")
+        $peppolID = $scheme !== null ? "{$scheme->value}:{$identifier}" : null;
 
-        // Also include the PEPPOL participant ID in standard format
-        if ($scheme !== null) {
-            $payload['peppolId'] = "{$scheme->value}:{$identifier}";
-        }
-
-        return $payload;
+        return new Customer(
+            name: 'Lookup',
+            address: new Address(
+                street: '-',
+                streetNumber: '-',
+                city: '-',
+                zipCode: '-',
+                countryCode: $countryCode,
+            ),
+            peppolID: $peppolID,
+            taxNumberType: $taxNumberType,
+            taxNumber: $taxNumberType !== null ? $identifier : null,
+            vatNumber: $taxNumberType === null ? $vatNumber : null,
+        );
     }
 
     /**
-     * Map EAS scheme to Scrada's internal taxNumberType.
+     * Map EAS scheme to Scrada's TaxNumberType enum.
      */
-    private function mapEasSchemeToScradaTaxType(?EasCode $scheme): ?int
+    private function mapEasSchemeToScradaTaxType(?EasCode $scheme): ?TaxNumberType
     {
         if ($scheme === null) {
             return null;
         }
 
         return match ($scheme) {
-            EasCode::BE_CBE => self::SCRADA_TAX_TYPE_BE_CBE,
-            EasCode::NL_KVK => self::SCRADA_TAX_TYPE_NL_KVK,
-            EasCode::FR_SIRET, EasCode::SIRENE => self::SCRADA_TAX_TYPE_FR_SIRET,
+            EasCode::BE_CBE => TaxNumberType::ENTERPRISE_NUMBER_BE,
+            EasCode::NL_KVK => TaxNumberType::KVK_NL,
+            EasCode::FR_SIRET, EasCode::SIRENE => TaxNumberType::SIRENE_FR,
             default => null,
         };
     }
@@ -444,7 +434,7 @@ class ScradaConnector implements PeppolConnector
             return new InvoiceStatus(
                 connectorInvoiceId: $response->id,
                 status: $status,
-                updatedAt: new \DateTimeImmutable,
+                updatedAt: new DateTimeImmutable,
                 metadata: ['scrada_response' => $response->toArray()],
             );
         } catch (ScradaException $e) {
@@ -464,7 +454,7 @@ class ScradaConnector implements PeppolConnector
                 return new InvoiceStatus(
                     connectorInvoiceId: "existing:{$invoice->invoiceNumber}",
                     status: PeppolStatus::DELIVERED_WITHOUT_CONFIRMATION,
-                    updatedAt: new \DateTimeImmutable,
+                    updatedAt: new DateTimeImmutable,
                     message: 'Invoice already exists in Scrada - status unknown',
                     metadata: [
                         'already_existed' => true,
@@ -483,7 +473,7 @@ class ScradaConnector implements PeppolConnector
             ]);
 
             throw ConnectorException::apiError($e->getMessage(), $e->getCode(), $responseData);
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             $duration = round((microtime(true) - $startTime) * 1000, 2);
 
             $this->log('error', 'API: Failed to send invoice', [
@@ -510,21 +500,27 @@ class ScradaConnector implements PeppolConnector
 
             $duration = round((microtime(true) - $startTime) * 1000, 2);
 
-            // Map Scrada status string to PeppolStatus
-            // Priority: check status string first, then boolean flags
-            $peppolStatus = $this->mapScradaStatusToPeppolStatus($status);
+            // Map Scrada SendStatusResponse to PeppolStatus
+            $peppolStatus = $this->mapSendStatusResponseToPeppolStatus($status);
 
-            // Extract error message from metadata if present
-            $errorMessage = $status->meta['errorMessage'] ?? null;
-            if (empty($errorMessage) && $peppolStatus->isFailed()) {
-                $errorMessage = $status->status; // Use status string as error message
-            }
+            // Check if recipient is not on PEPPOL (stored but not delivered via PEPPOL)
+            $recipientNotOnPeppol = in_array($status->status, [
+                SendStatus::ERROR_NOT_ON_PEPPOL,
+                SendStatus::NOT_ON_PEPPOL_SEND_BY_EMAIL,
+                SendStatus::BLOCKED_SEND_BY_EMAIL,
+                SendStatus::BLOCKED,
+            ], true);
+
+            // Use error message from response or status label for failed statuses
+            $errorMessage = $status->errorMessage ?? ($peppolStatus->isFailed() ? $status->status?->label() : null);
 
             $this->log('debug', 'API: Invoice status retrieved', [
                 'invoice_id' => $invoiceId,
-                'scrada_status' => $status->status,
-                'pending' => $status->pending,
-                'peppol_sent' => $status->peppolSent,
+                'scrada_status' => $status->status?->value,
+                'is_success' => $status->isSuccess(),
+                'is_error' => $status->isError(),
+                'is_pending' => $status->isPending(),
+                'recipient_not_on_peppol' => $recipientNotOnPeppol,
                 'mapped_status' => $peppolStatus->value,
                 'error_message' => $errorMessage,
                 'duration_ms' => $duration,
@@ -533,9 +529,10 @@ class ScradaConnector implements PeppolConnector
             return new InvoiceStatus(
                 connectorInvoiceId: $invoiceId,
                 status: $peppolStatus,
-                updatedAt: new \DateTimeImmutable,
-                metadata: $status->meta,
+                updatedAt: new DateTimeImmutable,
+                metadata: $status->toArray(),
                 message: $errorMessage,
+                recipientNotOnPeppol: $recipientNotOnPeppol,
             );
         } catch (NotFoundException $e) {
             $duration = round((microtime(true) - $startTime) * 1000, 2);
@@ -615,7 +612,7 @@ class ScradaConnector implements PeppolConnector
      * The Scrada connector is designed for SENDING invoices only.
      * Company registration for RECEIVING invoices must be done via Scrada portal.
      *
-     * @throws \RuntimeException Always throws - not supported
+     * @throws RuntimeException Always throws - not supported
      */
     public function registerCompany(Company $company): bool
     {
@@ -623,7 +620,7 @@ class ScradaConnector implements PeppolConnector
             'vat_number' => $company->vatNumber,
         ]);
 
-        throw new \RuntimeException(
+        throw new RuntimeException(
             'Company registration not supported by Scrada connector. '.
             'This connector is for sending invoices only. '.
             'To receive invoices, register your company via the Scrada portal.'
@@ -635,7 +632,7 @@ class ScradaConnector implements PeppolConnector
      *
      * The Scrada connector is designed for SENDING invoices only.
      *
-     * @throws \RuntimeException Always throws - not supported
+     * @throws RuntimeException Always throws - not supported
      */
     public function getReceivedInvoices(string $peppolId, array $filters = []): array
     {
@@ -643,7 +640,7 @@ class ScradaConnector implements PeppolConnector
             'peppol_id' => $peppolId,
         ]);
 
-        throw new \RuntimeException(
+        throw new RuntimeException(
             'Retrieving received invoices not supported by Scrada connector. '.
             'This connector is for sending invoices only.'
         );
@@ -651,7 +648,7 @@ class ScradaConnector implements PeppolConnector
 
     public function validateWebhookSignature(array $payload, string $signature): bool
     {
-        throw new \RuntimeException(
+        throw new RuntimeException(
             'Webhook validation not supported by Scrada connector. '.
             'Scrada does not currently provide webhook functionality.'
         );
@@ -659,7 +656,7 @@ class ScradaConnector implements PeppolConnector
 
     public function parseWebhookPayload(array $payload): array
     {
-        throw new \RuntimeException(
+        throw new RuntimeException(
             'Webhook parsing not supported by Scrada connector. '.
             'Scrada does not currently provide webhook functionality.'
         );
@@ -675,12 +672,12 @@ class ScradaConnector implements PeppolConnector
         $isDomestic = $customerCountry === $senderCountry;
 
         $customer = new Customer(
-            code: $customerData['code'] ?? $invoice->recipientVatNumber,
             name: $customerData['name'] ?? '',
+            address: Address::fromArray($customerData['address'] ?? []),
+            code: $customerData['code'] ?? $invoice->recipientVatNumber,
+            phone: $customerData['phone'] ?? null,
             email: $customerData['email'] ?? '',
             vatNumber: $customerData['vatNumber'] ?? $invoice->recipientVatNumber,
-            address: Address::fromArray($customerData['address'] ?? []),
-            phone: $customerData['phone'] ?? null,
         );
 
         // Debug: log raw line items from transformer
@@ -701,8 +698,8 @@ class ScradaConnector implements PeppolConnector
             // Use correct vatType based on domestic vs cross-border
             // Domestic 0% = Exempt (3), Cross-border 0% = ICD Services B2B (4)
             $vatType = $isDomestic
-                ? InvoiceLine::vatPercentageToTypeDomestic($vatPercentage)
-                : InvoiceLine::vatPercentageToTypeCrossBorder($vatPercentage);
+                ? VatType::fromPercentageDomestic($vatPercentage)
+                : VatType::fromPercentageCrossBorderB2B($vatPercentage);
 
             $this->log('debug', 'API: Creating InvoiceLine', [
                 'invoice_number' => $invoice->invoiceNumber,
@@ -891,43 +888,51 @@ class ScradaConnector implements PeppolConnector
     }
 
     /**
-     * Map Scrada SendStatus object to PeppolStatus enum.
+     * Map Scrada SendStatusResponse to PeppolStatus enum.
      *
-     * Used for status polling. Considers both the status string and boolean
-     * flags to determine the correct PeppolStatus. Error statuses like
-     * "Error not on Peppol" are properly handled.
+     * Uses the SDK's SendStatus enum and helper methods to determine
+     * the correct PeppolStatus.
      */
-    private function mapScradaStatusToPeppolStatus(SendStatus $status): PeppolStatus
+    private function mapSendStatusResponseToPeppolStatus(SendStatusResponse $response): PeppolStatus
     {
-        $statusLower = strtolower($status->status);
+        $status = $response->status;
 
-        // Check for error status strings first
-        if (str_contains($statusLower, 'error')) {
-            return PeppolStatus::FAILED_DELIVERY;
-        }
-
-        // Check for rejection
-        if (str_contains($statusLower, 'reject')) {
-            return PeppolStatus::REJECTED;
-        }
-
-        // Check boolean flags
-        if ($status->peppolSent) {
+        // Handle "not on PEPPOL" cases first - these are NOT failures
+        // The invoice IS stored in Scrada, just not delivered via PEPPOL
+        if ($status === SendStatus::ERROR_NOT_ON_PEPPOL
+            || $status === SendStatus::NOT_ON_PEPPOL_SEND_BY_EMAIL
+            || $status === SendStatus::BLOCKED_SEND_BY_EMAIL
+        ) {
             return PeppolStatus::DELIVERED_WITHOUT_CONFIRMATION;
         }
 
-        if ($status->pending) {
+        // Use the response's helper methods
+        if ($response->isSuccess()) {
+            return PeppolStatus::DELIVERED_WITHOUT_CONFIRMATION;
+        }
+
+        if ($response->isError()) {
+            return PeppolStatus::FAILED_DELIVERY;
+        }
+
+        if ($response->isPending()) {
             return PeppolStatus::PENDING;
         }
 
-        // Map known status strings
-        return match ($statusLower) {
-            'draft', 'created' => PeppolStatus::CREATED,
-            'sent', 'delivered' => PeppolStatus::DELIVERED_WITHOUT_CONFIRMATION,
-            'accepted' => PeppolStatus::ACCEPTED,
-            'rejected' => PeppolStatus::REJECTED,
-            'failed' => PeppolStatus::FAILED_DELIVERY,
-            default => PeppolStatus::CREATED,
+        // Fall back to mapping the SendStatus enum directly
+        if ($status === null) {
+            return PeppolStatus::CREATED;
+        }
+
+        return match ($status) {
+            SendStatus::CREATED => PeppolStatus::CREATED,
+            SendStatus::PROCESSED => PeppolStatus::DELIVERED_WITHOUT_CONFIRMATION,
+            SendStatus::RETRY => PeppolStatus::PENDING,
+            SendStatus::CANCELED, SendStatus::ERROR, SendStatus::ERROR_ALREADY_SENT,
+            SendStatus::ERROR_SEND_BY_EMAIL, SendStatus::BLOCKED, SendStatus::NONE => PeppolStatus::FAILED_DELIVERY,
+            // Already handled above, but for completeness
+            SendStatus::ERROR_NOT_ON_PEPPOL, SendStatus::NOT_ON_PEPPOL_SEND_BY_EMAIL,
+            SendStatus::BLOCKED_SEND_BY_EMAIL => PeppolStatus::DELIVERED_WITHOUT_CONFIRMATION,
         };
     }
 

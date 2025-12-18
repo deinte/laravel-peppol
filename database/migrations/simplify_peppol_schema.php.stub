@@ -1,0 +1,396 @@
+<?php
+
+declare(strict_types=1);
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
+
+/**
+ * Simplify PEPPOL schema from v0.0.1 to v1.0.0
+ *
+ * Changes:
+ * - Consolidate dual status system (connector_status + status) into single 'state' column
+ * - Remove redundant timestamps (connector_uploaded_at, dispatched_at -> sent_at)
+ * - Add proper retry tracking (dispatch_attempts)
+ * - Remove payload storage (can be regenerated via transformer)
+ * - Rename peppol_invoice_statuses to peppol_invoice_logs
+ * - Simplify peppol_companies table
+ */
+return new class extends Migration
+{
+    public function up(): void
+    {
+        // Step 1: Add new columns to peppol_invoices
+        if (! Schema::hasColumn('peppol_invoices', 'state')) {
+            Schema::table('peppol_invoices', function (Blueprint $table) {
+                $table->string('state', 50)->default('scheduled')->after('recipient_peppol_company_id');
+            });
+        }
+
+        if (! Schema::hasColumn('peppol_invoices', 'error_message')) {
+            Schema::table('peppol_invoices', function (Blueprint $table) {
+                $table->text('error_message')->nullable()->after('state');
+            });
+        }
+
+        if (! Schema::hasColumn('peppol_invoices', 'error_details')) {
+            Schema::table('peppol_invoices', function (Blueprint $table) {
+                $table->json('error_details')->nullable()->after('error_message');
+            });
+        }
+
+        if (! Schema::hasColumn('peppol_invoices', 'dispatch_attempts')) {
+            Schema::table('peppol_invoices', function (Blueprint $table) {
+                $table->unsignedTinyInteger('dispatch_attempts')->default(0)->after('poll_attempts');
+            });
+        }
+
+        if (! Schema::hasColumn('peppol_invoices', 'sent_at')) {
+            Schema::table('peppol_invoices', function (Blueprint $table) {
+                $table->timestamp('sent_at')->nullable();
+            });
+        }
+
+        if (! Schema::hasColumn('peppol_invoices', 'completed_at')) {
+            Schema::table('peppol_invoices', function (Blueprint $table) {
+                $table->timestamp('completed_at')->nullable();
+            });
+        }
+
+        // Step 2: Handle column renames (SQLite doesn't support rename in same transaction)
+        // Rename scheduled_dispatch_at to scheduled_at
+        if (Schema::hasColumn('peppol_invoices', 'scheduled_dispatch_at') && ! Schema::hasColumn('peppol_invoices', 'scheduled_at')) {
+            Schema::table('peppol_invoices', function (Blueprint $table) {
+                $table->renameColumn('scheduled_dispatch_at', 'scheduled_at');
+            });
+        }
+
+        // Rename skip_peppol_delivery to skip_delivery
+        if (Schema::hasColumn('peppol_invoices', 'skip_peppol_delivery') && ! Schema::hasColumn('peppol_invoices', 'skip_delivery')) {
+            Schema::table('peppol_invoices', function (Blueprint $table) {
+                $table->renameColumn('skip_peppol_delivery', 'skip_delivery');
+            });
+        }
+
+        // Rename next_poll_at to next_retry_at
+        if (Schema::hasColumn('peppol_invoices', 'next_poll_at') && ! Schema::hasColumn('peppol_invoices', 'next_retry_at')) {
+            Schema::table('peppol_invoices', function (Blueprint $table) {
+                $table->renameColumn('next_poll_at', 'next_retry_at');
+            });
+        }
+
+        // Step 3: Migrate data from old columns to new
+        $this->migrateInvoiceData();
+
+        // Step 4: Create new peppol_invoice_logs table
+        if (! Schema::hasTable('peppol_invoice_logs')) {
+            Schema::create('peppol_invoice_logs', function (Blueprint $table) {
+                $table->id();
+                $table->unsignedBigInteger('peppol_invoice_id');
+                $table->string('from_state', 50)->nullable();
+                $table->string('to_state', 50);
+                $table->string('message', 500)->nullable();
+                $table->json('details')->nullable();
+                $table->string('actor', 100)->nullable()->comment('User or system that triggered the change');
+                $table->timestamp('created_at')->useCurrent();
+
+                $table->index(['peppol_invoice_id', 'created_at'], 'idx_invoice_created');
+                $table->index(['to_state', 'created_at'], 'idx_state_created');
+                $table->index('created_at', 'idx_created');
+
+                $table->foreign('peppol_invoice_id')
+                    ->references('id')
+                    ->on('peppol_invoices')
+                    ->cascadeOnDelete();
+            });
+        }
+
+        // Step 5: Migrate data from old peppol_invoice_statuses to new logs table
+        $this->migrateStatusesToLogs();
+
+        // Step 6: Drop old indexes (if they exist)
+        $this->dropIndexIfExists('peppol_invoices', 'idx_peppol_invoices_polling_main');
+        $this->dropIndexIfExists('peppol_invoices', 'idx_peppol_invoices_polling_failed');
+        $this->dropIndexIfExists('peppol_invoices', 'idx_peppol_invoices_dispatch_ready');
+        $this->dropIndexIfExists('peppol_invoices', 'peppol_invoices_dispatched_at_scheduled_dispatch_at_index');
+        $this->dropIndexIfExists('peppol_invoices', 'peppol_invoices_next_poll_at_index');
+        $this->dropIndexIfExists('peppol_invoices', 'peppol_invoices_status_index');
+        $this->dropIndexIfExists('peppol_invoices', 'peppol_invoices_scheduled_dispatch_at_index');
+        $this->dropIndexIfExists('peppol_invoices', 'next_poll_at');
+
+        // Step 7: Drop old columns from peppol_invoices (one at a time for SQLite compatibility)
+        $columnsToDrop = [
+            'status',
+            'status_message',
+            'connector_status',
+            'connector_error',
+            'connector_uploaded_at',
+            'dispatched_at',
+            'delivered_at',
+            'request_payload',
+            'poll_response',
+            'metadata',
+        ];
+
+        foreach ($columnsToDrop as $column) {
+            if (Schema::hasColumn('peppol_invoices', $column)) {
+                Schema::table('peppol_invoices', function (Blueprint $table) use ($column) {
+                    $table->dropColumn($column);
+                });
+            }
+        }
+
+        // Step 8: Add new indexes for the simplified schema
+        Schema::table('peppol_invoices', function (Blueprint $table) {
+            $table->index('state', 'idx_state');
+        });
+
+        if (Schema::hasColumn('peppol_invoices', 'scheduled_at') && Schema::hasColumn('peppol_invoices', 'next_retry_at')) {
+            Schema::table('peppol_invoices', function (Blueprint $table) {
+                $table->index(['state', 'scheduled_at', 'next_retry_at'], 'idx_dispatch_queue');
+            });
+        }
+
+        if (Schema::hasColumn('peppol_invoices', 'sent_at') && Schema::hasColumn('peppol_invoices', 'next_retry_at')) {
+            Schema::table('peppol_invoices', function (Blueprint $table) {
+                $table->index(['state', 'sent_at', 'next_retry_at'], 'idx_poll_queue');
+            });
+        }
+
+        // Step 9: Drop old peppol_invoice_statuses table
+        Schema::dropIfExists('peppol_invoice_statuses');
+
+        // Step 10: Simplify peppol_companies table
+        $this->simplifyPeppolCompanies();
+    }
+
+    protected function migrateInvoiceData(): void
+    {
+        // Map old dual-status system to new single state
+        DB::table('peppol_invoices')->orderBy('id')->chunk(100, function ($invoices) {
+            foreach ($invoices as $invoice) {
+                $state = $this->mapToNewState($invoice);
+                $sentAt = $invoice->connector_uploaded_at ?? $invoice->dispatched_at ?? null;
+                $completedAt = $invoice->delivered_at ?? null;
+
+                // Determine completed_at based on state
+                if (in_array($state, ['delivered', 'accepted', 'rejected', 'failed', 'cancelled', 'stored'])) {
+                    $completedAt = $completedAt ?? $invoice->updated_at;
+                }
+
+                // Get error message from old columns
+                $errorMessage = $invoice->connector_error ?? $invoice->status_message ?? null;
+
+                DB::table('peppol_invoices')
+                    ->where('id', $invoice->id)
+                    ->update([
+                        'state' => $state,
+                        'sent_at' => $sentAt,
+                        'completed_at' => $completedAt,
+                        'error_message' => $errorMessage ? substr($errorMessage, 0, 1000) : null,
+                        'error_details' => $this->buildErrorDetails($invoice),
+                    ]);
+            }
+        });
+    }
+
+    protected function mapToNewState(object $invoice): string
+    {
+        // Check skip_delivery first
+        $skipDelivery = $invoice->skip_peppol_delivery ?? $invoice->skip_delivery ?? false;
+
+        // Check connector_status (API call result)
+        $connectorStatus = $invoice->connector_status ?? null;
+
+        // Check PEPPOL status
+        $peppolStatus = $invoice->status ?? 'PENDING';
+
+        // If connector failed, it's send_failed (can retry)
+        if ($connectorStatus === 'FAILED') {
+            return 'send_failed';
+        }
+
+        // If connector succeeded but skip_delivery is true
+        if ($connectorStatus === 'SUCCESS' && $skipDelivery) {
+            return 'stored';
+        }
+
+        // If connector succeeded, check PEPPOL status
+        if ($connectorStatus === 'SUCCESS') {
+            return match ($peppolStatus) {
+                'PENDING', 'CREATED' => 'sent',
+                'DELIVERED_WITHOUT_CONFIRMATION', 'DELIVERED' => 'delivered',
+                'ACCEPTED' => 'accepted',
+                'REJECTED' => 'rejected',
+                'FAILED_DELIVERY' => 'failed',
+                default => 'sent',
+            };
+        }
+
+        // If no connector status yet, check if scheduled
+        $scheduledAt = $invoice->scheduled_dispatch_at ?? $invoice->scheduled_at ?? null;
+        if ($scheduledAt && strtotime($scheduledAt) > time()) {
+            return 'scheduled';
+        }
+
+        // Default to scheduled
+        return 'scheduled';
+    }
+
+    protected function buildErrorDetails(object $invoice): ?string
+    {
+        $details = [];
+
+        if ($invoice->connector_error ?? null) {
+            $decoded = json_decode($invoice->connector_error, true);
+            $details['connector_error'] = $decoded ?: $invoice->connector_error;
+        }
+
+        if ($invoice->status_message ?? null) {
+            $details['status_message'] = $invoice->status_message;
+        }
+
+        if ($invoice->metadata ?? null) {
+            $decoded = json_decode($invoice->metadata, true);
+            if ($decoded) {
+                $details['legacy_metadata'] = $decoded;
+            }
+        }
+
+        return empty($details) ? null : json_encode($details);
+    }
+
+    protected function migrateStatusesToLogs(): void
+    {
+        if (! Schema::hasTable('peppol_invoice_statuses')) {
+            return;
+        }
+
+        // Migrate existing status records to new logs table
+        DB::table('peppol_invoice_statuses')
+            ->orderBy('id')
+            ->chunk(100, function ($statuses) {
+                $logs = [];
+
+                foreach ($statuses as $status) {
+                    $logs[] = [
+                        'peppol_invoice_id' => $status->peppol_invoice_id,
+                        'from_state' => null, // Old table didn't track from_state
+                        'to_state' => $this->mapOldStatusToState($status->status ?? 'pending'),
+                        'message' => $status->message ?? null,
+                        'details' => $status->metadata ?? null,
+                        'actor' => 'system',
+                        'created_at' => $status->created_at,
+                    ];
+                }
+
+                if (! empty($logs)) {
+                    DB::table('peppol_invoice_logs')->insert($logs);
+                }
+            });
+    }
+
+    protected function mapOldStatusToState(string $status): string
+    {
+        return match (strtoupper($status)) {
+            'PENDING', 'CREATED' => 'scheduled',
+            'DELIVERED_WITHOUT_CONFIRMATION', 'DELIVERED' => 'delivered',
+            'ACCEPTED' => 'accepted',
+            'REJECTED' => 'rejected',
+            'FAILED_DELIVERY', 'FAILED' => 'failed',
+            default => 'scheduled',
+        };
+    }
+
+    protected function simplifyPeppolCompanies(): void
+    {
+        if (! Schema::hasTable('peppol_companies')) {
+            return;
+        }
+
+        // Drop columns we no longer need (one at a time for SQLite compatibility)
+        $columnsToDrop = [
+            'email',
+            'tax_number',
+            'tax_number_scheme',
+            'metadata',
+        ];
+
+        foreach ($columnsToDrop as $column) {
+            if (Schema::hasColumn('peppol_companies', $column)) {
+                Schema::table('peppol_companies', function (Blueprint $table) use ($column) {
+                    $table->dropColumn($column);
+                });
+            }
+        }
+
+        // Ensure we have is_active column
+        if (! Schema::hasColumn('peppol_companies', 'is_active')) {
+            Schema::table('peppol_companies', function (Blueprint $table) {
+                $table->boolean('is_active')->default(true)->after('country');
+            });
+        }
+    }
+
+    protected function dropIndexIfExists(string $table, string $indexName): void
+    {
+        try {
+            Schema::table($table, function (Blueprint $table) use ($indexName) {
+                $table->dropIndex($indexName);
+            });
+        } catch (\Exception $e) {
+            // Index doesn't exist, ignore
+        }
+    }
+
+    public function down(): void
+    {
+        // This is a major schema change - down migration restores old structure
+        // In practice, you'd want to backup before running this migration
+
+        Schema::table('peppol_invoices', function (Blueprint $table) {
+            // Re-add old columns
+            $table->string('status')->default('PENDING')->after('state');
+            $table->text('status_message')->nullable()->after('status');
+            $table->string('connector_status')->default('PENDING')->after('connector_type');
+            $table->text('connector_error')->nullable()->after('connector_status');
+            $table->timestamp('connector_uploaded_at')->nullable()->after('connector_error');
+            $table->timestamp('dispatched_at')->nullable()->after('sent_at');
+            $table->timestamp('delivered_at')->nullable()->after('dispatched_at');
+            $table->json('request_payload')->nullable();
+            $table->json('poll_response')->nullable();
+            $table->json('metadata')->nullable();
+        });
+
+        // Restore data from new columns to old
+        DB::table('peppol_invoices')->update([
+            'dispatched_at' => DB::raw('sent_at'),
+            'delivered_at' => DB::raw('completed_at'),
+        ]);
+
+        // Drop new columns
+        Schema::table('peppol_invoices', function (Blueprint $table) {
+            $table->dropColumn(['state', 'sent_at', 'completed_at', 'error_message', 'error_details', 'dispatch_attempts']);
+        });
+
+        // Restore old statuses table
+        Schema::create('peppol_invoice_statuses', function (Blueprint $table) {
+            $table->id();
+            $table->unsignedBigInteger('peppol_invoice_id');
+            $table->string('status');
+            $table->text('message')->nullable();
+            $table->json('metadata')->nullable();
+            $table->timestamps();
+
+            $table->foreign('peppol_invoice_id')
+                ->references('id')
+                ->on('peppol_invoices')
+                ->cascadeOnDelete();
+        });
+
+        // Drop new logs table
+        Schema::dropIfExists('peppol_invoice_logs');
+    }
+};

@@ -18,20 +18,11 @@
             "role": "Developer"
         }
     ],
-    "repositories": [
-        {
-            "type": "path",
-            "url": "../scrada-php-sdk",
-            "options": {
-                "symlink": true
-            }
-        }
-    ],
     "require": {
         "php": "^8.3",
         "spatie/laravel-package-tools": "^1.16",
         "illuminate/contracts": "^10.0||^11.0||^12.0",
-        "deinte/scrada-php-sdk": "@dev"
+        "deinte/scrada-php-sdk": "^0.0.3"
     },
     "require-dev": {
         "laravel/pint": "^1.14",

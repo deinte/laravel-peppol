@@ -4,9 +4,10 @@ declare(strict_types=1);
 
 namespace Deinte\Peppol\Commands;
 
-use Deinte\Peppol\Enums\PeppolStatus;
+use Deinte\Peppol\Enums\PeppolState;
 use Deinte\Peppol\Jobs\DispatchPeppolInvoice;
 use Deinte\Peppol\Models\PeppolInvoice;
+use Exception;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -39,10 +40,9 @@ class DispatchPeppolInvoicesCommand extends Command
             'limit' => $limit,
         ]);
 
-        // First check count for user feedback
+        // Use the readyToDispatch scope which handles state and timing
         $totalCount = PeppolInvoice::query()
             ->readyToDispatch()
-            ->where('status', PeppolStatus::PENDING)
             ->limit($limit)
             ->count();
 
@@ -66,8 +66,7 @@ class DispatchPeppolInvoicesCommand extends Command
         // Use chunking for memory efficiency on large datasets
         PeppolInvoice::query()
             ->readyToDispatch()
-            ->where('status', PeppolStatus::PENDING)
-            ->select(['id', 'invoiceable_type', 'invoiceable_id', 'recipient_peppol_company_id', 'scheduled_dispatch_at'])
+            ->select(['id', 'invoiceable_type', 'invoiceable_id', 'recipient_peppol_company_id', 'state', 'dispatch_attempts', 'scheduled_at'])
             ->with(['invoiceable', 'recipientCompany'])
             ->chunkById(50, function ($invoices) use ($dryRun, &$stats, &$processed, $limit) {
                 foreach ($invoices as $invoice) {
@@ -95,7 +94,8 @@ class DispatchPeppolInvoicesCommand extends Command
     protected function dispatchInvoice(PeppolInvoice $invoice, array $stats): array
     {
         $invoiceableType = class_basename($invoice->invoiceable_type);
-        $info = "#{$invoice->id} - {$invoiceableType} #{$invoice->invoiceable_id}";
+        $attemptInfo = $invoice->dispatch_attempts > 0 ? " (retry #{$invoice->dispatch_attempts})" : '';
+        $info = "#{$invoice->id} - {$invoiceableType} #{$invoice->invoiceable_id}{$attemptInfo}";
 
         try {
             DispatchPeppolInvoice::dispatch($invoice->id);
@@ -106,8 +106,10 @@ class DispatchPeppolInvoicesCommand extends Command
                 'peppol_invoice_id' => $invoice->id,
                 'invoiceable_type' => $invoice->invoiceable_type,
                 'invoiceable_id' => $invoice->invoiceable_id,
+                'state' => $invoice->state->value,
+                'dispatch_attempts' => $invoice->dispatch_attempts,
             ]);
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             $this->line("  <error>Failed:</error> {$info} - {$e->getMessage()}");
             $stats['errors']++;
 
@@ -125,21 +127,33 @@ class DispatchPeppolInvoicesCommand extends Command
         $tableName = (new PeppolInvoice)->getTable();
         $now = now();
 
-        // Use single aggregate query to reduce from 5 queries to 1
+        $pendingDispatch = PeppolState::pendingDispatchValues();
+        $sent = PeppolState::awaitingDeliveryValues();
+        $completed = PeppolState::successValues();
+
+        // Use single aggregate query for efficiency
         $stats = DB::table($tableName)
             ->selectRaw('
-                SUM(CASE WHEN dispatched_at IS NULL AND status = ? THEN 1 ELSE 0 END) as pending,
-                SUM(CASE WHEN dispatched_at IS NULL AND status = ? AND scheduled_dispatch_at IS NOT NULL AND scheduled_dispatch_at <= ? THEN 1 ELSE 0 END) as due_now,
-                SUM(CASE WHEN dispatched_at IS NULL AND status = ? AND scheduled_dispatch_at > ? THEN 1 ELSE 0 END) as scheduled,
-                SUM(CASE WHEN dispatched_at IS NOT NULL THEN 1 ELSE 0 END) as dispatched,
-                SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) as failed
+                SUM(CASE WHEN state = ? THEN 1 ELSE 0 END) as scheduled,
+                SUM(CASE WHEN state = ? THEN 1 ELSE 0 END) as send_failed,
+                SUM(CASE WHEN state IN (?, ?) AND (scheduled_at IS NULL OR scheduled_at <= ?) AND (next_retry_at IS NULL OR next_retry_at <= ?) THEN 1 ELSE 0 END) as due_now,
+                SUM(CASE WHEN state = ? AND scheduled_at > ? THEN 1 ELSE 0 END) as scheduled_later,
+                SUM(CASE WHEN state = ? THEN 1 ELSE 0 END) as sending,
+                SUM(CASE WHEN state IN (?, ?) THEN 1 ELSE 0 END) as sent,
+                SUM(CASE WHEN state IN (?, ?, ?) THEN 1 ELSE 0 END) as completed,
+                SUM(CASE WHEN state = ? THEN 1 ELSE 0 END) as failed
             ', [
-                PeppolStatus::PENDING->value,
-                PeppolStatus::PENDING->value,
+                PeppolState::SCHEDULED->value,
+                PeppolState::SEND_FAILED->value,
+                ...$pendingDispatch,
                 $now,
-                PeppolStatus::PENDING->value,
                 $now,
-                PeppolStatus::FAILED_DELIVERY->value,
+                PeppolState::SCHEDULED->value,
+                $now,
+                PeppolState::SENDING->value,
+                ...$sent,
+                ...$completed,
+                PeppolState::FAILED->value,
             ])
             ->first();
 
@@ -150,10 +164,12 @@ class DispatchPeppolInvoicesCommand extends Command
             ['Status', 'Count'],
             [
                 ['Due for dispatch now', (int) $stats->due_now],
-                ['Scheduled for later', (int) $stats->scheduled],
-                ['Total pending', (int) $stats->pending],
-                ['Already dispatched', (int) $stats->dispatched],
-                ['Failed delivery', (int) $stats->failed],
+                ['Scheduled for later', (int) $stats->scheduled_later],
+                ['Awaiting retry (send_failed)', (int) $stats->send_failed],
+                ['Currently sending', (int) $stats->sending],
+                ['Sent (awaiting delivery)', (int) $stats->sent],
+                ['Completed (delivered/accepted)', (int) $stats->completed],
+                ['Permanently failed', (int) $stats->failed],
             ]
         );
 
@@ -168,7 +184,11 @@ class DispatchPeppolInvoicesCommand extends Command
     protected function outputDryRun(PeppolInvoice $invoice): void
     {
         $invoiceableType = class_basename($invoice->invoiceable_type);
-        $this->line("  Would dispatch: #{$invoice->id} - {$invoiceableType} #{$invoice->invoiceable_id}");
+        $stateInfo = $invoice->state === PeppolState::SEND_FAILED
+            ? " (retry #{$invoice->dispatch_attempts})"
+            : '';
+
+        $this->line("  Would dispatch: #{$invoice->id} - {$invoiceableType} #{$invoice->invoiceable_id}{$stateInfo}");
     }
 
     protected function outputSummary(array $stats, bool $dryRun): void

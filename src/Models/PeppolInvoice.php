@@ -4,39 +4,38 @@ declare(strict_types=1);
 
 namespace Deinte\Peppol\Models;
 
-use Deinte\Peppol\Enums\PeppolStatus;
+use Deinte\Peppol\Enums\PeppolState;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\MorphTo;
 use Illuminate\Support\Facades\DB;
+use InvalidArgumentException;
+use RuntimeException;
 
 /**
  * PEPPOL invoice tracking.
  *
- * This model uses a polymorphic relationship to link to your application's
- * invoice models, allowing you to attach PEPPOL functionality to any invoice.
+ * Uses a single state machine for clear lifecycle tracking.
+ * Polymorphic relationship allows any invoice model to use PEPPOL.
  *
  * @property int $id
  * @property string $invoiceable_type
  * @property int $invoiceable_id
  * @property int|null $recipient_peppol_company_id
+ * @property PeppolState $state
+ * @property string|null $error_message
+ * @property array|null $error_details
  * @property string|null $connector_invoice_id
- * @property string|null $connector_type
- * @property string|null $connector_status
- * @property string|null $connector_error
- * @property \Illuminate\Support\Carbon|null $connector_uploaded_at
- * @property PeppolStatus $status
- * @property bool $skip_peppol_delivery
- * @property string|null $status_message
+ * @property string $connector_type
+ * @property int $dispatch_attempts
  * @property int $poll_attempts
- * @property \Illuminate\Support\Carbon|null $next_poll_at
- * @property \Illuminate\Support\Carbon|null $scheduled_dispatch_at
- * @property \Illuminate\Support\Carbon|null $dispatched_at
- * @property \Illuminate\Support\Carbon|null $delivered_at
- * @property array|null $metadata
- * @property array|null $request_payload
+ * @property \Illuminate\Support\Carbon|null $next_retry_at
+ * @property \Illuminate\Support\Carbon|null $scheduled_at
+ * @property \Illuminate\Support\Carbon|null $sent_at
+ * @property \Illuminate\Support\Carbon|null $completed_at
+ * @property bool $skip_delivery
  * @property \Illuminate\Support\Carbon|null $created_at
  * @property \Illuminate\Support\Carbon|null $updated_at
  */
@@ -46,39 +45,45 @@ class PeppolInvoice extends Model
         'invoiceable_type',
         'invoiceable_id',
         'recipient_peppol_company_id',
+        'state',
+        'error_message',
+        'error_details',
         'connector_invoice_id',
         'connector_type',
-        'connector_status',
-        'connector_error',
-        'connector_uploaded_at',
-        'status',
-        'skip_peppol_delivery',
-        'status_message',
+        'dispatch_attempts',
         'poll_attempts',
-        'next_poll_at',
-        'scheduled_dispatch_at',
-        'dispatched_at',
-        'delivered_at',
-        'metadata',
-        'request_payload',
-        'poll_response',
+        'next_retry_at',
+        'scheduled_at',
+        'sent_at',
+        'completed_at',
+        'skip_delivery',
     ];
 
     protected $casts = [
-        'status' => PeppolStatus::class,
-        'skip_peppol_delivery' => 'boolean',
+        'state' => PeppolState::class,
+        'error_details' => 'array',
+        'dispatch_attempts' => 'integer',
         'poll_attempts' => 'integer',
-        'metadata' => 'array',
-        'request_payload' => 'array',
-        'poll_response' => 'array',
-        'connector_uploaded_at' => 'datetime',
-        'next_poll_at' => 'datetime',
-        'scheduled_dispatch_at' => 'datetime',
-        'dispatched_at' => 'datetime',
-        'delivered_at' => 'datetime',
+        'skip_delivery' => 'boolean',
+        'next_retry_at' => 'datetime',
+        'scheduled_at' => 'datetime',
+        'sent_at' => 'datetime',
+        'completed_at' => 'datetime',
         'created_at' => 'datetime',
         'updated_at' => 'datetime',
     ];
+
+    protected $attributes = [
+        'state' => 'scheduled',
+        'connector_type' => 'scrada',
+        'dispatch_attempts' => 0,
+        'poll_attempts' => 0,
+        'skip_delivery' => false,
+    ];
+
+    // =========================================================================
+    // Relationships
+    // =========================================================================
 
     /**
      * Get the parent invoiceable model (your app's invoice).
@@ -89,7 +94,7 @@ class PeppolInvoice extends Model
     }
 
     /**
-     * Get the recipient company.
+     * Get the recipient company (lookup cache).
      */
     public function recipientCompany(): BelongsTo
     {
@@ -97,162 +102,343 @@ class PeppolInvoice extends Model
     }
 
     /**
-     * Get the status history for this invoice.
+     * Get the activity logs for this invoice.
      */
-    public function statuses(): HasMany
+    public function logs(): HasMany
     {
-        return $this->hasMany(PeppolInvoiceStatus::class)->orderBy('created_at', 'desc');
+        return $this->hasMany(PeppolInvoiceLog::class)->orderBy('created_at', 'desc');
     }
 
-    /**
-     * Update the status and create a history entry.
-     */
-    public function updateStatus(PeppolStatus $status, ?string $message = null, ?array $metadata = null): void
-    {
-        DB::transaction(function () use ($status, $message, $metadata) {
-            $updateData = [
-                'status' => $status,
-                'status_message' => $message,
-            ];
+    // =========================================================================
+    // State Transitions
+    // =========================================================================
 
-            if ($status->isDelivered() && $this->delivered_at === null) {
-                $updateData['delivered_at'] = now();
+    /**
+     * Transition to a new state with logging.
+     */
+    public function transitionTo(
+        PeppolState $newState,
+        ?string $message = null,
+        ?array $details = null,
+        ?string $actor = null
+    ): void {
+        $fromState = $this->state;
+
+        DB::transaction(function () use ($newState, $message, $details, $actor, $fromState) {
+            $updateData = ['state' => $newState];
+
+            // Set completed_at for final states
+            if ($newState->isFinal() && $this->completed_at === null) {
+                $updateData['completed_at'] = now();
+            }
+
+            // Clear error on success states
+            if ($newState->isSuccess()) {
+                $updateData['error_message'] = null;
+                $updateData['error_details'] = null;
             }
 
             $this->update($updateData);
 
-            $this->statuses()->create([
-                'status' => $status,
+            // Log the transition
+            $this->logs()->create([
+                'from_state' => $fromState?->value,
+                'to_state' => $newState->value,
                 'message' => $message,
-                'metadata' => $metadata,
+                'details' => $details,
+                'actor' => $actor ?? 'system',
             ]);
         });
     }
 
     /**
-     * Check if the invoice is ready to be dispatched.
+     * Mark invoice as sending (API call starting).
      */
-    public function isReadyToDispatch(): bool
-    {
-        return $this->dispatched_at === null
-            && $this->scheduled_dispatch_at !== null
-            && $this->scheduled_dispatch_at <= now();
-    }
-
-    /**
-     * Scope to get invoices ready for dispatch.
-     */
-    public function scopeReadyToDispatch(Builder $query): Builder
-    {
-        return $query->whereNull('dispatched_at')
-            ->whereNotNull('scheduled_dispatch_at')
-            ->where('scheduled_dispatch_at', '<=', now());
-    }
-
-    /**
-     * Scope to filter by status.
-     */
-    public function scopeWithStatus(Builder $query, PeppolStatus $status): Builder
-    {
-        return $query->where('status', $status);
-    }
-
-    /**
-     * Scope to get invoices that need status polling.
-     *
-     * Includes:
-     * - Dispatched invoices not in final status
-     * - Failed invoices that haven't exceeded max retries and are due for polling
-     */
-    public function scopeNeedsPolling(Builder $query, int $maxPollAttempts = 5): Builder
-    {
-        $finalStatuses = [
-            PeppolStatus::ACCEPTED,
-            PeppolStatus::REJECTED,
-            PeppolStatus::DELIVERED_WITHOUT_CONFIRMATION,
-        ];
-
-        return $query
-            ->whereNotNull('dispatched_at')
-            ->whereNotNull('connector_invoice_id')
-            ->where('skip_peppol_delivery', false)
-            ->where(function (Builder $q) use ($finalStatuses, $maxPollAttempts) {
-                // Normal invoices not in final status
-                $q->whereNotIn('status', [
-                    ...$finalStatuses,
-                    PeppolStatus::FAILED_DELIVERY,
-                ]);
-
-                // OR failed invoices that can still be retried
-                $q->orWhere(function (Builder $failed) use ($maxPollAttempts) {
-                    $failed->where('status', PeppolStatus::FAILED_DELIVERY)
-                        ->where('poll_attempts', '<', $maxPollAttempts)
-                        ->where(function (Builder $timing) {
-                            $timing->whereNull('next_poll_at')
-                                ->orWhere('next_poll_at', '<=', now());
-                        });
-                });
-            });
-    }
-
-    /**
-     * Schedule the next poll attempt for a failed invoice.
-     *
-     * Uses exponential backoff: 1h, 4h, 12h, 24h, 48h
-     * Updates attributes in memory so no fresh() call is needed after.
-     */
-    public function scheduleNextPoll(): void
-    {
-        $delays = config('peppol.poll.retry_delays', [1, 4, 12, 24, 48]); // hours
-        $attempt = $this->poll_attempts;
-
-        $delayHours = $delays[$attempt] ?? $delays[array_key_last($delays)];
-
-        $this->poll_attempts = $attempt + 1;
-        $this->next_poll_at = now()->addHours($delayHours);
-        $this->save();
-    }
-
-    /**
-     * Check if this invoice has exceeded max poll attempts.
-     */
-    public function hasExceededMaxPollAttempts(): bool
-    {
-        $maxAttempts = config('peppol.poll.max_attempts', 5);
-
-        return $this->poll_attempts >= $maxAttempts;
-    }
-
-    /**
-     * Reset poll attempts (e.g., when status changes from failed to something else).
-     */
-    public function resetPollAttempts(): void
+    public function markAsSending(): void
     {
         $this->update([
-            'poll_attempts' => 0,
-            'next_poll_at' => null,
+            'state' => PeppolState::SENDING,
+            'dispatch_attempts' => $this->dispatch_attempts + 1,
         ]);
     }
 
     /**
-     * Get the parsed connector error data.
+     * Mark invoice as sent successfully.
      *
-     * Returns structured error data: ['message' => '...', 'context' => [...]]
+     * Transitions to STORED if:
+     * - skip_delivery is explicitly set
+     * - connector_invoice_id starts with "existing:" (can't be polled)
      *
-     * @return array<string, mixed>|null
+     * Otherwise, transitions to SENT and lets polling determine final state.
      */
-    public function getConnectorErrorData(): ?array
+    public function markAsSent(string $connectorInvoiceId, ?string $message = null): void
     {
-        if ($this->connector_error === null) {
+        // Go to STORED if skip_delivery OR if invoice already existed (can't poll)
+        $alreadyExisted = str_starts_with($connectorInvoiceId, 'existing:');
+        $shouldStore = $this->skip_delivery || $alreadyExisted;
+        $targetState = $shouldStore ? PeppolState::STORED : PeppolState::SENT;
+
+        $this->update([
+            'state' => $targetState,
+            'connector_invoice_id' => $connectorInvoiceId,
+            'sent_at' => now(),
+            'error_message' => null,
+            'error_details' => null,
+            'completed_at' => $shouldStore ? now() : null,
+        ]);
+
+        $this->logs()->create([
+            'from_state' => PeppolState::SENDING->value,
+            'to_state' => $targetState->value,
+            'message' => $message ?? 'Successfully sent to connector',
+            'actor' => 'system',
+        ]);
+    }
+
+    /**
+     * Mark invoice as send failed (will retry).
+     */
+    public function markAsSendFailed(string $errorMessage, ?array $errorDetails = null): void
+    {
+        $maxAttempts = config('peppol.dispatch.max_attempts', 3);
+        $isFinalFailure = $this->dispatch_attempts >= $maxAttempts;
+
+        $targetState = $isFinalFailure ? PeppolState::FAILED : PeppolState::SEND_FAILED;
+        $retryDelays = config('peppol.dispatch.retry_delays', [5, 15, 60]);
+        $delayMinutes = $retryDelays[$this->dispatch_attempts - 1] ?? end($retryDelays);
+
+        $this->update([
+            'state' => $targetState,
+            'error_message' => substr($errorMessage, 0, 1000),
+            'error_details' => $errorDetails,
+            'next_retry_at' => $isFinalFailure ? null : now()->addMinutes($delayMinutes),
+            'completed_at' => $isFinalFailure ? now() : null,
+        ]);
+
+        $this->logs()->create([
+            'from_state' => PeppolState::SENDING->value,
+            'to_state' => $targetState->value,
+            'message' => $isFinalFailure
+                ? "Permanently failed after {$maxAttempts} attempts: {$errorMessage}"
+                : "Send failed (attempt {$this->dispatch_attempts}/{$maxAttempts}): {$errorMessage}",
+            'details' => $errorDetails,
+            'actor' => 'system',
+        ]);
+    }
+
+    /**
+     * Update delivery status from polling.
+     */
+    public function updateDeliveryStatus(PeppolState $newState, ?string $message = null): void
+    {
+        if (! in_array($newState, [
+            PeppolState::POLLING,
+            PeppolState::DELIVERED,
+            PeppolState::ACCEPTED,
+            PeppolState::REJECTED,
+            PeppolState::FAILED,
+            PeppolState::STORED,
+        ], true)) {
+            throw new InvalidArgumentException("Invalid delivery state: {$newState->value}");
+        }
+
+        $this->transitionTo($newState, $message, null, 'poll');
+    }
+
+    /**
+     * Schedule next poll attempt.
+     */
+    public function scheduleNextPoll(): void
+    {
+        // Delays in minutes: 1min, 5min, 10min, 30min, 1hr, 6hr, 24hr, 7 days
+        $delays = config('peppol.poll.retry_delays_minutes', [1, 5, 10, 30, 60, 360, 1440, 10080]);
+        $delayMinutes = $delays[$this->poll_attempts] ?? end($delays);
+
+        $this->update([
+            'poll_attempts' => $this->poll_attempts + 1,
+            'next_retry_at' => now()->addMinutes($delayMinutes),
+        ]);
+    }
+
+    /**
+     * Cancel the invoice.
+     */
+    public function cancel(?string $reason = null, ?string $actor = null): void
+    {
+        if ($this->state->isFinal()) {
+            throw new RuntimeException('Cannot cancel invoice in final state');
+        }
+
+        $this->transitionTo(
+            PeppolState::CANCELLED,
+            $reason ?? 'Invoice cancelled',
+            null,
+            $actor ?? auth()->user()?->email ?? 'system'
+        );
+    }
+
+    // =========================================================================
+    // Query Scopes
+    // =========================================================================
+
+    /**
+     * Invoices ready for dispatch.
+     */
+    public function scopeReadyToDispatch(Builder $query): Builder
+    {
+        return $query
+            ->whereIn('state', [PeppolState::SCHEDULED, PeppolState::SEND_FAILED])
+            ->where(function (Builder $q) {
+                $q->whereNull('scheduled_at')
+                    ->orWhere('scheduled_at', '<=', now());
+            })
+            ->where(function (Builder $q) {
+                $q->whereNull('next_retry_at')
+                    ->orWhere('next_retry_at', '<=', now());
+            });
+    }
+
+    /**
+     * Invoices needing status polling.
+     */
+    public function scopeNeedsPolling(Builder $query): Builder
+    {
+        $maxPollAttempts = config('peppol.poll.max_attempts', 50);
+
+        return $query
+            ->whereIn('state', [PeppolState::SENT, PeppolState::POLLING])
+            ->whereNotNull('connector_invoice_id')
+            ->where('skip_delivery', false)
+            ->where('poll_attempts', '<', $maxPollAttempts)
+            ->where(function (Builder $q) {
+                $q->whereNull('next_retry_at')
+                    ->orWhere('next_retry_at', '<=', now());
+            });
+    }
+
+    /**
+     * Invoices in terminal states.
+     */
+    public function scopeCompleted(Builder $query): Builder
+    {
+        return $query->whereIn('state', [
+            PeppolState::DELIVERED,
+            PeppolState::ACCEPTED,
+            PeppolState::REJECTED,
+            PeppolState::FAILED,
+            PeppolState::CANCELLED,
+            PeppolState::STORED,
+        ]);
+    }
+
+    /**
+     * Invoices in success states.
+     */
+    public function scopeSuccessful(Builder $query): Builder
+    {
+        return $query->whereIn('state', [
+            PeppolState::DELIVERED,
+            PeppolState::ACCEPTED,
+            PeppolState::STORED,
+        ]);
+    }
+
+    /**
+     * Invoices in failure states.
+     */
+    public function scopeFailed(Builder $query): Builder
+    {
+        return $query->whereIn('state', [
+            PeppolState::SEND_FAILED,
+            PeppolState::REJECTED,
+            PeppolState::FAILED,
+        ]);
+    }
+
+    /**
+     * Filter by state.
+     */
+    public function scopeInState(Builder $query, PeppolState $state): Builder
+    {
+        return $query->where('state', $state);
+    }
+
+    // =========================================================================
+    // Helper Methods
+    // =========================================================================
+
+    /**
+     * Check if the invoice can be retried.
+     */
+    public function canRetry(): bool
+    {
+        if (! $this->state->canRetryDispatch()) {
+            return false;
+        }
+
+        $maxAttempts = config('peppol.dispatch.max_attempts', 3);
+
+        return $this->dispatch_attempts < $maxAttempts;
+    }
+
+    /**
+     * Check if dispatch is ready now.
+     */
+    public function isReadyToDispatch(): bool
+    {
+        if (! $this->state->isPendingDispatch()) {
+            return false;
+        }
+
+        if ($this->scheduled_at && $this->scheduled_at->isFuture()) {
+            return false;
+        }
+
+        if ($this->next_retry_at && $this->next_retry_at->isFuture()) {
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Check if polling is needed.
+     */
+    public function needsPolling(): bool
+    {
+        if (! $this->state->shouldPoll()) {
+            return false;
+        }
+
+        if ($this->skip_delivery) {
+            return false;
+        }
+
+        if (! $this->connector_invoice_id) {
+            return false;
+        }
+
+        $maxAttempts = config('peppol.poll.max_attempts', 50);
+        if ($this->poll_attempts >= $maxAttempts) {
+            return false;
+        }
+
+        if ($this->next_retry_at && $this->next_retry_at->isFuture()) {
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Get time until next retry.
+     */
+    public function getTimeUntilRetry(): ?int
+    {
+        if (! $this->next_retry_at) {
             return null;
         }
 
-        $decoded = json_decode($this->connector_error, true);
-
-        if (json_last_error() !== JSON_ERROR_NONE || ! is_array($decoded)) {
-            return null;
-        }
-
-        return $decoded;
+        return max(0, $this->next_retry_at->diffInSeconds(now(), false));
     }
 }

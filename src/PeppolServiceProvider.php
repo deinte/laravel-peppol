@@ -8,6 +8,8 @@ use Deinte\Peppol\Commands\DispatchPeppolInvoicesCommand;
 use Deinte\Peppol\Commands\PollPeppolStatusCommand;
 use Deinte\Peppol\Connectors\ScradaConnector;
 use Deinte\Peppol\Contracts\PeppolConnector;
+use InvalidArgumentException;
+use RuntimeException;
 use Spatie\LaravelPackageTools\Package;
 use Spatie\LaravelPackageTools\PackageServiceProvider;
 
@@ -47,6 +49,8 @@ class PeppolServiceProvider extends PackageServiceProvider
                 'add_connector_tracking_to_peppol_invoices_table',
                 'add_poll_retry_fields_to_peppol_invoices_table',
                 'add_polling_indexes_to_peppol_invoices_table',
+                'add_payload_columns_to_peppol_invoices_table',
+                'simplify_peppol_schema',
             ]);
     }
 
@@ -60,7 +64,7 @@ class PeppolServiceProvider extends PackageServiceProvider
 
             return match ($connectorName) {
                 'scrada' => $this->createScradaConnector($connectorConfig),
-                default => throw new \InvalidArgumentException("Unknown PEPPOL connector: {$connectorName}"),
+                default => throw new InvalidArgumentException("Unknown PEPPOL connector: {$connectorName}"),
             };
         });
 
@@ -87,19 +91,19 @@ class PeppolServiceProvider extends PackageServiceProvider
         $companyId = $config['company_id'] ?? null;
 
         if (! is_string($apiKey) || $apiKey === '') {
-            throw new \RuntimeException(
+            throw new RuntimeException(
                 'PEPPOL Scrada connector requires api_key. Set SCRADA_API_KEY in .env'
             );
         }
 
         if (! is_string($apiSecret) || $apiSecret === '') {
-            throw new \RuntimeException(
+            throw new RuntimeException(
                 'PEPPOL Scrada connector requires api_secret. Set SCRADA_API_SECRET in .env'
             );
         }
 
         if (! is_string($companyId) || $companyId === '') {
-            throw new \RuntimeException(
+            throw new RuntimeException(
                 'PEPPOL Scrada connector requires company_id. Set SCRADA_COMPANY_ID in .env'
             );
         }

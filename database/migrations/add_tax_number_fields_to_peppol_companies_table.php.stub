@@ -8,10 +8,17 @@ return new class extends Migration
 {
     public function up(): void
     {
-        Schema::table('peppol_companies', function (Blueprint $table) {
-            $table->string('tax_number')->nullable()->after('email');
-            $table->string('tax_number_scheme', 4)->nullable()->after('tax_number');
-        });
+        if (! Schema::hasColumn('peppol_companies', 'tax_number')) {
+            Schema::table('peppol_companies', function (Blueprint $table) {
+                $table->string('tax_number')->nullable()->after('email');
+            });
+        }
+
+        if (! Schema::hasColumn('peppol_companies', 'tax_number_scheme')) {
+            Schema::table('peppol_companies', function (Blueprint $table) {
+                $table->string('tax_number_scheme', 4)->nullable()->after('tax_number');
+            });
+        }
     }
 
     public function down(): void

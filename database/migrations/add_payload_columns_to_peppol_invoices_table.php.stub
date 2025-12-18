@@ -10,10 +10,17 @@ return new class extends Migration
 {
     public function up(): void
     {
-        Schema::table('peppol_invoices', function (Blueprint $table) {
-            $table->json('request_payload')->nullable()->after('metadata');
-            $table->json('poll_response')->nullable()->after('request_payload');
-        });
+        if (! Schema::hasColumn('peppol_invoices', 'request_payload')) {
+            Schema::table('peppol_invoices', function (Blueprint $table) {
+                $table->json('request_payload')->nullable()->after('metadata');
+            });
+        }
+
+        if (! Schema::hasColumn('peppol_invoices', 'poll_response')) {
+            Schema::table('peppol_invoices', function (Blueprint $table) {
+                $table->json('poll_response')->nullable()->after('request_payload');
+            });
+        }
     }
 
     public function down(): void
