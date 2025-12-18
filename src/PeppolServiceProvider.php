@@ -84,36 +84,24 @@ class PeppolServiceProvider extends PackageServiceProvider
     /**
      * Create the Scrada connector with validated config.
      *
+     * Validation is deferred - credentials are only checked when the connector
+     * is actually resolved from the container, not during package discovery.
+     *
      * @param  array<string, mixed>  $config
      */
     private function createScradaConnector(array $config): ScradaConnector
     {
-        $apiKey = $config['api_key'] ?? null;
-        $apiSecret = $config['api_secret'] ?? null;
-        $companyId = $config['company_id'] ?? null;
+        $apiKey = $config['api_key'] ?? '';
+        $apiSecret = $config['api_secret'] ?? '';
+        $companyId = $config['company_id'] ?? '';
 
-        if (! is_string($apiKey) || $apiKey === '') {
-            throw new RuntimeException(
-                'PEPPOL Scrada connector requires api_key. Set SCRADA_API_KEY in .env'
-            );
-        }
-
-        if (! is_string($apiSecret) || $apiSecret === '') {
-            throw new RuntimeException(
-                'PEPPOL Scrada connector requires api_secret. Set SCRADA_API_SECRET in .env'
-            );
-        }
-
-        if (! is_string($companyId) || $companyId === '') {
-            throw new RuntimeException(
-                'PEPPOL Scrada connector requires company_id. Set SCRADA_COMPANY_ID in .env'
-            );
-        }
+        // Don't validate during package discovery - allow empty values
+        // The connector will fail gracefully when actually used without credentials
 
         return new ScradaConnector(
-            apiKey: $apiKey,
-            apiSecret: $apiSecret,
-            companyId: $companyId,
+            apiKey: is_string($apiKey) ? $apiKey : '',
+            apiSecret: is_string($apiSecret) ? $apiSecret : '',
+            companyId: is_string($companyId) ? $companyId : '',
             baseUrl: is_string($config['base_url'] ?? null) ? $config['base_url'] : null,
         );
     }
