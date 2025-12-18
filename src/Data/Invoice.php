@@ -6,13 +6,20 @@ namespace Deinte\Peppol\Data;
 
 /**
  * Represents an invoice to be sent via PEPPOL.
+ *
+ * PDF attachment can be provided in two ways:
+ * - `pdfPath`: Local file path that the connector will read
+ * - `pdfContent`: Base64-encoded PDF content (takes precedence over pdfPath)
+ *
+ * The transformer is responsible for reading PDFs from storage and providing
+ * either the local path or the base64 content.
  */
 class Invoice
 {
     public function __construct(
         public readonly string $senderVatNumber,
         public readonly string $recipientVatNumber,
-        public readonly string $recipientPeppolId,
+        public readonly ?string $recipientPeppolId,
         public readonly string $invoiceNumber,
         public readonly \DateTimeInterface $invoiceDate,
         public readonly \DateTimeInterface $dueDate,
@@ -20,14 +27,15 @@ class Invoice
         public readonly string $currency,
         public readonly array $lineItems,
         public readonly ?string $pdfPath = null,
-        public readonly ?string $pdfUrl = null,
+        public readonly ?string $pdfContent = null,
+        public readonly ?string $pdfFilename = null,
         public readonly bool $alreadySentToCustomer = false,
         public readonly ?array $additionalData = null,
     ) {}
 
     public function hasPdf(): bool
     {
-        return $this->pdfPath !== null || $this->pdfUrl !== null;
+        return $this->pdfContent !== null || $this->pdfPath !== null;
     }
 
     public function toArray(): array
@@ -43,7 +51,8 @@ class Invoice
             'currency' => $this->currency,
             'line_items' => $this->lineItems,
             'pdf_path' => $this->pdfPath,
-            'pdf_url' => $this->pdfUrl,
+            'pdf_content' => $this->pdfContent ? '[BASE64_CONTENT]' : null,
+            'pdf_filename' => $this->pdfFilename,
             'already_sent_to_customer' => $this->alreadySentToCustomer,
             'additional_data' => $this->additionalData,
         ];

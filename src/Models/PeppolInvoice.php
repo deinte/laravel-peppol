@@ -23,6 +23,10 @@ use Illuminate\Support\Facades\DB;
  * @property int $invoiceable_id
  * @property int|null $recipient_peppol_company_id
  * @property string|null $connector_invoice_id
+ * @property string|null $connector_type
+ * @property string|null $connector_status
+ * @property string|null $connector_error
+ * @property \Illuminate\Support\Carbon|null $connector_uploaded_at
  * @property PeppolStatus $status
  * @property bool $skip_peppol_delivery
  * @property string|null $status_message
@@ -32,6 +36,7 @@ use Illuminate\Support\Facades\DB;
  * @property \Illuminate\Support\Carbon|null $dispatched_at
  * @property \Illuminate\Support\Carbon|null $delivered_at
  * @property array|null $metadata
+ * @property array|null $request_payload
  * @property \Illuminate\Support\Carbon|null $created_at
  * @property \Illuminate\Support\Carbon|null $updated_at
  */
@@ -226,5 +231,27 @@ class PeppolInvoice extends Model
             'poll_attempts' => 0,
             'next_poll_at' => null,
         ]);
+    }
+
+    /**
+     * Get the parsed connector error data.
+     *
+     * Returns structured error data: ['message' => '...', 'context' => [...]]
+     *
+     * @return array<string, mixed>|null
+     */
+    public function getConnectorErrorData(): ?array
+    {
+        if ($this->connector_error === null) {
+            return null;
+        }
+
+        $decoded = json_decode($this->connector_error, true);
+
+        if (json_last_error() !== JSON_ERROR_NONE || ! is_array($decoded)) {
+            return null;
+        }
+
+        return $decoded;
     }
 }

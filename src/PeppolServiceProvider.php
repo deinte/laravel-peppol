@@ -59,12 +59,7 @@ class PeppolServiceProvider extends PackageServiceProvider
             $connectorConfig = $config['connectors'][$connectorName] ?? [];
 
             return match ($connectorName) {
-                'scrada' => new ScradaConnector(
-                    apiKey: $connectorConfig['api_key'],
-                    apiSecret: $connectorConfig['api_secret'] ?? '',
-                    companyId: $connectorConfig['company_id'] ?? '',
-                    baseUrl: $connectorConfig['base_url'] ?? null,
-                ),
+                'scrada' => $this->createScradaConnector($connectorConfig),
                 default => throw new \InvalidArgumentException("Unknown PEPPOL connector: {$connectorName}"),
             };
         });
@@ -78,5 +73,42 @@ class PeppolServiceProvider extends PackageServiceProvider
 
         // Alias for facade
         $this->app->alias(PeppolService::class, 'peppol');
+    }
+
+    /**
+     * Create the Scrada connector with validated config.
+     *
+     * @param  array<string, mixed>  $config
+     */
+    private function createScradaConnector(array $config): ScradaConnector
+    {
+        $apiKey = $config['api_key'] ?? null;
+        $apiSecret = $config['api_secret'] ?? null;
+        $companyId = $config['company_id'] ?? null;
+
+        if (! is_string($apiKey) || $apiKey === '') {
+            throw new \RuntimeException(
+                'PEPPOL Scrada connector requires api_key. Set SCRADA_API_KEY in .env'
+            );
+        }
+
+        if (! is_string($apiSecret) || $apiSecret === '') {
+            throw new \RuntimeException(
+                'PEPPOL Scrada connector requires api_secret. Set SCRADA_API_SECRET in .env'
+            );
+        }
+
+        if (! is_string($companyId) || $companyId === '') {
+            throw new \RuntimeException(
+                'PEPPOL Scrada connector requires company_id. Set SCRADA_COMPANY_ID in .env'
+            );
+        }
+
+        return new ScradaConnector(
+            apiKey: $apiKey,
+            apiSecret: $apiSecret,
+            companyId: $companyId,
+            baseUrl: is_string($config['base_url'] ?? null) ? $config['base_url'] : null,
+        );
     }
 }

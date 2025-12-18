@@ -103,10 +103,14 @@ class TestCase extends Orchestra
             $table->string('status')->default('PENDING')->index();
             $table->boolean('skip_peppol_delivery')->default(false);
             $table->text('status_message')->nullable();
+            $table->unsignedInteger('poll_attempts')->default(0);
+            $table->timestamp('next_poll_at')->nullable()->index();
             $table->timestamp('scheduled_dispatch_at')->nullable()->index();
             $table->timestamp('dispatched_at')->nullable();
             $table->timestamp('delivered_at')->nullable();
             $table->json('metadata')->nullable();
+            $table->json('request_payload')->nullable();
+            $table->json('poll_response')->nullable();
             $table->timestamps();
             $table->index(['dispatched_at', 'scheduled_dispatch_at']);
         });

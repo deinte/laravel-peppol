@@ -194,15 +194,18 @@ class ScradaConnector implements PeppolConnector
         } catch (ScradaException $e) {
             $duration = round((microtime(true) - $startTime) * 1000, 2);
 
+            $responseData = $e->getResponseData();
+
             $this->log('error', 'API: Scrada API error during company lookup', [
                 'vat_number' => $vatNumber,
                 'lookup_identifier' => $lookupIdentifier,
                 'error' => $e->getMessage(),
                 'code' => $e->getCode(),
+                'response_data' => $responseData,
                 'duration_ms' => $duration,
             ]);
 
-            throw ConnectorException::apiError($e->getMessage(), $e->getCode());
+            throw ConnectorException::apiError($e->getMessage(), $e->getCode(), $responseData);
         } catch (\Exception $e) {
             $duration = round((microtime(true) - $startTime) * 1000, 2);
 
@@ -447,20 +450,39 @@ class ScradaConnector implements PeppolConnector
         } catch (ScradaException $e) {
             $duration = round((microtime(true) - $startTime) * 1000, 2);
 
-            // Capture additional response details for debugging
-            $responseBody = method_exists($e, 'getResponseBody') ? $e->getResponseBody() : null;
-            $responseData = method_exists($e, 'getResponseData') ? $e->getResponseData() : null;
+            $responseData = $e->getResponseData();
+
+            // Check if invoice already exists (error code 110365)
+            if ($this->isInvoiceAlreadyExistsError($responseData)) {
+                $this->log('info', 'API: Invoice already exists in Scrada - treating as success', [
+                    'invoice_number' => $invoice->invoiceNumber,
+                    'duration_ms' => $duration,
+                ]);
+
+                // Return success status - invoice is in Scrada, just not newly created
+                // We use the invoice number as a placeholder ID since Scrada doesn't return the actual ID
+                return new InvoiceStatus(
+                    connectorInvoiceId: "existing:{$invoice->invoiceNumber}",
+                    status: PeppolStatus::CREATED,
+                    updatedAt: new \DateTimeImmutable,
+                    message: 'Invoice already exists in Scrada',
+                    metadata: [
+                        'already_existed' => true,
+                        'scrada_response' => $responseData,
+                    ],
+                );
+            }
 
             $this->log('error', 'API: Scrada API error during invoice send', [
                 'invoice_number' => $invoice->invoiceNumber,
                 'error' => $e->getMessage(),
                 'code' => $e->getCode(),
-                'response_body' => $responseBody,
+                'response_body' => $e->getResponseBody(),
                 'response_data' => $responseData,
                 'duration_ms' => $duration,
             ]);
 
-            throw ConnectorException::apiError($e->getMessage(), $e->getCode());
+            throw ConnectorException::apiError($e->getMessage(), $e->getCode(), $responseData);
         } catch (\Exception $e) {
             $duration = round((microtime(true) - $startTime) * 1000, 2);
 
@@ -527,14 +549,17 @@ class ScradaConnector implements PeppolConnector
         } catch (ScradaException $e) {
             $duration = round((microtime(true) - $startTime) * 1000, 2);
 
+            $responseData = $e->getResponseData();
+
             $this->log('error', 'API: Scrada API error during status check', [
                 'invoice_id' => $invoiceId,
                 'error' => $e->getMessage(),
                 'code' => $e->getCode(),
+                'response_data' => $responseData,
                 'duration_ms' => $duration,
             ]);
 
-            throw ConnectorException::apiError($e->getMessage(), $e->getCode());
+            throw ConnectorException::apiError($e->getMessage(), $e->getCode(), $responseData);
         }
     }
 
@@ -570,14 +595,17 @@ class ScradaConnector implements PeppolConnector
         } catch (ScradaException $e) {
             $duration = round((microtime(true) - $startTime) * 1000, 2);
 
+            $responseData = $e->getResponseData();
+
             $this->log('error', 'API: Scrada API error during UBL retrieval', [
                 'invoice_id' => $invoiceId,
                 'error' => $e->getMessage(),
                 'code' => $e->getCode(),
+                'response_data' => $responseData,
                 'duration_ms' => $duration,
             ]);
 
-            throw ConnectorException::apiError($e->getMessage(), $e->getCode());
+            throw ConnectorException::apiError($e->getMessage(), $e->getCode(), $responseData);
         }
     }
 
@@ -623,42 +651,34 @@ class ScradaConnector implements PeppolConnector
 
     public function validateWebhookSignature(array $payload, string $signature): bool
     {
-        $this->log('debug', 'Validating webhook signature', [
-            'payload_keys' => array_keys($payload),
-        ]);
-
-        // TODO: Webhook signature validation depends on Scrada's webhook implementation
-        // For now, return true to allow webhook processing
-        // This should be implemented once Scrada provides webhook signature details
-        return true;
+        throw new \RuntimeException(
+            'Webhook validation not supported by Scrada connector. '.
+            'Scrada does not currently provide webhook functionality.'
+        );
     }
 
     public function parseWebhookPayload(array $payload): array
     {
-        $this->log('debug', 'Parsing webhook payload', [
-            'payload' => $payload,
-        ]);
-
-        // TODO: Parse Scrada webhook payload into standardized format
-        // This depends on the webhook structure Scrada sends
-        // For now, return a basic structure
-        return [
-            'invoice_id' => $payload['invoiceId'] ?? $payload['invoice_id'] ?? null,
-            'status' => $this->mapScradaStatus($payload['status'] ?? 'PENDING'),
-            'message' => $payload['message'] ?? null,
-            'metadata' => $payload,
-        ];
+        throw new \RuntimeException(
+            'Webhook parsing not supported by Scrada connector. '.
+            'Scrada does not currently provide webhook functionality.'
+        );
     }
 
-    private function transformInvoiceToScradaFormat(Invoice $invoice): CreateSalesInvoiceData
+    public function transformInvoiceToScradaFormat(Invoice $invoice): CreateSalesInvoiceData
     {
         $customerData = $invoice->additionalData['customer'] ?? [];
+
+        // Determine if this is a domestic invoice (same sender/recipient country)
+        $customerCountry = strtoupper($customerData['address']['countryCode'] ?? 'BE');
+        $senderCountry = 'BE'; // Scrada is configured for Belgian sender
+        $isDomestic = $customerCountry === $senderCountry;
 
         $customer = new Customer(
             code: $customerData['code'] ?? $invoice->recipientVatNumber,
             name: $customerData['name'] ?? '',
             email: $customerData['email'] ?? '',
-            vatNumber: $invoice->recipientVatNumber,
+            vatNumber: $customerData['vatNumber'] ?? $invoice->recipientVatNumber,
             address: Address::fromArray($customerData['address'] ?? []),
             phone: $customerData['phone'] ?? null,
         );
@@ -667,23 +687,31 @@ class ScradaConnector implements PeppolConnector
         $this->log('debug', 'API: Raw line items from transformer', [
             'invoice_number' => $invoice->invoiceNumber,
             'line_items' => $invoice->lineItems,
+            'is_domestic' => $isDomestic,
+            'customer_country' => $customerCountry,
         ]);
 
         $lineNumber = 0;
-        $lines = array_map(function ($lineItem) use (&$lineNumber, $invoice) {
+        $lines = array_map(function ($lineItem) use (&$lineNumber, $invoice, $isDomestic) {
             $lineNumber++;
             $vatPercentage = (float) ($lineItem['vatPerc'] ?? $lineItem['vatPercentage'] ?? 21);
             $totalExclVat = isset($lineItem['totalExclVat']) ? (float) $lineItem['totalExclVat'] : null;
             $vatAmount = isset($lineItem['vatAmount']) ? (float) $lineItem['vatAmount'] : null;
 
+            // Use correct vatType based on domestic vs cross-border
+            // Domestic 0% = Exempt (3), Cross-border 0% = ICD Services B2B (4)
+            $vatType = $isDomestic
+                ? InvoiceLine::vatPercentageToTypeDomestic($vatPercentage)
+                : InvoiceLine::vatPercentageToTypeCrossBorder($vatPercentage);
+
             $this->log('debug', 'API: Creating InvoiceLine', [
                 'invoice_number' => $invoice->invoiceNumber,
                 'line_number' => $lineNumber,
                 'vatPercentage' => $vatPercentage,
+                'vatType' => $vatType,
+                'is_domestic' => $isDomestic,
                 'totalExclVat' => $totalExclVat,
                 'vatAmount' => $vatAmount,
-                'raw_vatPerc' => $lineItem['vatPerc'] ?? 'NOT SET',
-                'raw_vatAmount' => $lineItem['vatAmount'] ?? 'NOT SET',
             ]);
 
             return new InvoiceLine(
@@ -691,7 +719,7 @@ class ScradaConnector implements PeppolConnector
                 quantity: (float) ($lineItem['quantity'] ?? 1),
                 unitPrice: (float) ($lineItem['unitPrice'] ?? 0),
                 vatPercentage: $vatPercentage,
-                vatType: InvoiceLine::vatPercentageToType($vatPercentage),
+                vatType: $vatType,
                 lineNumber: $lineNumber,
                 totalExclVat: $totalExclVat,
                 vatAmount: $vatAmount,
@@ -784,62 +812,60 @@ class ScradaConnector implements PeppolConnector
     /**
      * Build attachments array for the invoice.
      *
+     * PDF can be provided via:
+     * - pdfContent: Base64-encoded content (preferred, takes precedence)
+     * - pdfPath: Local file path that will be read
+     *
      * @return array<int, Attachment>
      */
     private function buildAttachments(Invoice $invoice): array
     {
         $attachments = [];
 
-        // Try local path first
-        if ($invoice->pdfPath !== null && file_exists($invoice->pdfPath)) {
-            $filename = basename($invoice->pdfPath);
-            $content = file_get_contents($invoice->pdfPath);
+        // Option 1: Pre-encoded base64 content (preferred)
+        if ($invoice->pdfContent !== null) {
+            $filename = $invoice->pdfFilename ?? "{$invoice->invoiceNumber}.pdf";
+            $attachments[] = Attachment::pdf($filename, $invoice->pdfContent);
 
-            if ($content !== false) {
-                $attachments[] = Attachment::pdf($filename, base64_encode($content));
-
-                $this->log('debug', 'API: PDF attachment included (local file)', [
-                    'invoice_number' => $invoice->invoiceNumber,
-                    'pdf_filename' => $filename,
-                    'pdf_size_bytes' => filesize($invoice->pdfPath),
-                ]);
-            }
+            $this->log('debug', 'API: PDF attachment included (base64 content)', [
+                'invoice_number' => $invoice->invoiceNumber,
+                'pdf_filename' => $filename,
+                'pdf_size_bytes' => strlen($invoice->pdfContent),
+            ]);
 
             return $attachments;
         }
 
-        // Fallback to URL
-        if ($invoice->pdfUrl !== null) {
-            try {
-                $this->log('debug', 'API: Fetching PDF from URL', [
+        // Option 2: Local file path
+        if ($invoice->pdfPath !== null) {
+            if (! file_exists($invoice->pdfPath)) {
+                $this->log('warning', 'API: PDF file not found', [
                     'invoice_number' => $invoice->invoiceNumber,
-                    'pdf_url' => $invoice->pdfUrl,
+                    'pdf_path' => $invoice->pdfPath,
                 ]);
 
-                $pdfContent = @file_get_contents($invoice->pdfUrl);
-
-                if ($pdfContent !== false) {
-                    $filename = basename(parse_url($invoice->pdfUrl, PHP_URL_PATH) ?? "{$invoice->invoiceNumber}.pdf");
-                    $attachments[] = Attachment::pdf($filename, base64_encode($pdfContent));
-
-                    $this->log('debug', 'API: PDF attachment included (from URL)', [
-                        'invoice_number' => $invoice->invoiceNumber,
-                        'pdf_filename' => $filename,
-                        'pdf_size_bytes' => strlen($pdfContent),
-                    ]);
-                } else {
-                    $this->log('warning', 'API: Failed to fetch PDF from URL', [
-                        'invoice_number' => $invoice->invoiceNumber,
-                        'pdf_url' => $invoice->pdfUrl,
-                    ]);
-                }
-            } catch (\Exception $e) {
-                $this->log('warning', 'API: Exception fetching PDF from URL', [
-                    'invoice_number' => $invoice->invoiceNumber,
-                    'pdf_url' => $invoice->pdfUrl,
-                    'error' => $e->getMessage(),
-                ]);
+                return $attachments;
             }
+
+            $content = file_get_contents($invoice->pdfPath);
+
+            if ($content === false) {
+                $this->log('warning', 'API: Failed to read PDF file', [
+                    'invoice_number' => $invoice->invoiceNumber,
+                    'pdf_path' => $invoice->pdfPath,
+                ]);
+
+                return $attachments;
+            }
+
+            $filename = $invoice->pdfFilename ?? basename($invoice->pdfPath);
+            $attachments[] = Attachment::pdf($filename, base64_encode($content));
+
+            $this->log('debug', 'API: PDF attachment included (local file)', [
+                'invoice_number' => $invoice->invoiceNumber,
+                'pdf_filename' => $filename,
+                'pdf_size_bytes' => strlen($content),
+            ]);
         }
 
         return $attachments;
@@ -847,6 +873,8 @@ class ScradaConnector implements PeppolConnector
 
     /**
      * Map Scrada's status string to our PeppolStatus enum.
+     *
+     * Used for simple string statuses (e.g., from CreateSalesInvoiceResponse).
      */
     private function mapScradaStatus(string $status): PeppolStatus
     {
@@ -857,15 +885,15 @@ class ScradaConnector implements PeppolConnector
             'accepted' => PeppolStatus::ACCEPTED,
             'rejected' => PeppolStatus::REJECTED,
             'failed' => PeppolStatus::FAILED_DELIVERY,
-            default => PeppolStatus::PENDING,
+            default => PeppolStatus::CREATED,
         };
     }
 
     /**
-     * Map Scrada SendStatus to PeppolStatus enum.
+     * Map Scrada SendStatus object to PeppolStatus enum.
      *
-     * This method considers both the status string and boolean flags
-     * to determine the correct PeppolStatus. Error statuses like
+     * Used for status polling. Considers both the status string and boolean
+     * flags to determine the correct PeppolStatus. Error statuses like
      * "Error not on Peppol" are properly handled.
      */
     private function mapScradaStatusToPeppolStatus(SendStatus $status): PeppolStatus
@@ -900,5 +928,32 @@ class ScradaConnector implements PeppolConnector
             'failed' => PeppolStatus::FAILED_DELIVERY,
             default => PeppolStatus::CREATED,
         };
+    }
+
+    /**
+     * Check if Scrada error response indicates invoice already exists.
+     *
+     * Error structure:
+     * - errorCode 100008 (parent): "There are error(s) when adding Sales invoice"
+     * - innerErrors[].errorCode 110365: "Invoice number {number} in book year {year} already exists!"
+     */
+    private function isInvoiceAlreadyExistsError(?array $responseData): bool
+    {
+        if ($responseData === null) {
+            return false;
+        }
+
+        // Check for parent error code 100008 with inner error 110365
+        if (($responseData['errorCode'] ?? null) !== 100008) {
+            return false;
+        }
+
+        foreach ($responseData['innerErrors'] ?? [] as $innerError) {
+            if (($innerError['errorCode'] ?? null) === 110365) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

@@ -9,6 +9,7 @@ use Deinte\Peppol\Data\Company;
 use Deinte\Peppol\Data\Invoice;
 use Deinte\Peppol\Data\InvoiceStatus;
 use Deinte\Peppol\Enums\PeppolStatus;
+use Deinte\Peppol\Exceptions\PeppolException;
 use Deinte\Peppol\Models\PeppolCompany;
 use Deinte\Peppol\Models\PeppolInvoice;
 use Illuminate\Database\Eloquent\Model;
@@ -273,11 +274,19 @@ class PeppolService
 
             return $status;
         } catch (\Exception $e) {
+            // Extract structured error data from exception context (if available)
+            $errorData = $e instanceof PeppolException && $e->getContext()
+                ? [
+                    'message' => $e->getMessage(),
+                    'context' => $e->getContext(),
+                ]
+                : $e->getMessage();
+
             // Track failed connector upload (still save the payload for debugging)
             $peppolInvoice->update([
                 'connector_type' => $connectorType,
                 'connector_status' => 'FAILED',
-                'connector_error' => $e->getMessage(),
+                'connector_error' => is_array($errorData) ? json_encode($errorData) : $errorData,
                 'dispatched_at' => now(),
                 'request_payload' => $requestPayload,
             ]);
@@ -286,6 +295,7 @@ class PeppolService
                 'peppol_invoice_id' => $peppolInvoice->id,
                 'connector_type' => $connectorType,
                 'error' => $e->getMessage(),
+                'error_context' => $e instanceof PeppolException ? $e->getContext() : null,
             ]);
 
             throw $e;

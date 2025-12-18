@@ -41,13 +41,15 @@ describe('Invoice DTO', function () {
             currency: 'EUR',
             lineItems: [],
             pdfPath: '/path/to/invoice.pdf',
-            pdfUrl: 'https://example.com/invoice.pdf',
+            pdfContent: base64_encode('PDF content'),
+            pdfFilename: 'invoice.pdf',
             alreadySentToCustomer: true,
             additionalData: ['journal' => 'SALES'],
         );
 
         expect($invoice->pdfPath)->toBe('/path/to/invoice.pdf');
-        expect($invoice->pdfUrl)->toBe('https://example.com/invoice.pdf');
+        expect($invoice->pdfContent)->toBe(base64_encode('PDF content'));
+        expect($invoice->pdfFilename)->toBe('invoice.pdf');
         expect($invoice->alreadySentToCustomer)->toBeTrue();
         expect($invoice->additionalData)->toBe(['journal' => 'SALES']);
     });
@@ -70,7 +72,7 @@ describe('Invoice DTO', function () {
             expect($invoice->hasPdf())->toBeTrue();
         });
 
-        it('returns true when pdfUrl is set', function () {
+        it('returns true when pdfContent is set', function () {
             $invoice = new Invoice(
                 senderVatNumber: 'BE0123456789',
                 recipientVatNumber: 'NL123456789B01',
@@ -81,13 +83,13 @@ describe('Invoice DTO', function () {
                 totalAmount: 1210.00,
                 currency: 'EUR',
                 lineItems: [],
-                pdfUrl: 'https://example.com/invoice.pdf',
+                pdfContent: base64_encode('PDF content'),
             );
 
             expect($invoice->hasPdf())->toBeTrue();
         });
 
-        it('returns false when neither pdfPath nor pdfUrl is set', function () {
+        it('returns false when neither pdfPath nor pdfContent is set', function () {
             $invoice = new Invoice(
                 senderVatNumber: 'BE0123456789',
                 recipientVatNumber: 'NL123456789B01',
@@ -108,6 +110,7 @@ describe('Invoice DTO', function () {
         it('serializes all fields', function () {
             $invoiceDate = new DateTimeImmutable('2024-01-15');
             $dueDate = new DateTimeImmutable('2024-02-15');
+            $pdfContent = base64_encode('PDF content');
 
             $invoice = new Invoice(
                 senderVatNumber: 'BE0123456789',
@@ -122,7 +125,8 @@ describe('Invoice DTO', function () {
                     ['description' => 'Service A', 'quantity' => 1, 'unitPrice' => 1000.00],
                 ],
                 pdfPath: '/path/to/invoice.pdf',
-                pdfUrl: 'https://example.com/invoice.pdf',
+                pdfContent: $pdfContent,
+                pdfFilename: 'invoice.pdf',
                 alreadySentToCustomer: true,
                 additionalData: ['journal' => 'SALES'],
             );
@@ -142,7 +146,8 @@ describe('Invoice DTO', function () {
                     ['description' => 'Service A', 'quantity' => 1, 'unitPrice' => 1000.00],
                 ],
                 'pdf_path' => '/path/to/invoice.pdf',
-                'pdf_url' => 'https://example.com/invoice.pdf',
+                'pdf_content' => '[BASE64_CONTENT]',
+                'pdf_filename' => 'invoice.pdf',
                 'already_sent_to_customer' => true,
                 'additional_data' => ['journal' => 'SALES'],
             ]);
@@ -164,7 +169,8 @@ describe('Invoice DTO', function () {
             $array = $invoice->toArray();
 
             expect($array['pdf_path'])->toBeNull();
-            expect($array['pdf_url'])->toBeNull();
+            expect($array['pdf_content'])->toBeNull();
+            expect($array['pdf_filename'])->toBeNull();
             expect($array['already_sent_to_customer'])->toBeFalse();
             expect($array['additional_data'])->toBeNull();
         });

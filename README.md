@@ -73,11 +73,21 @@ Create a transformer that converts your invoice model to PEPPOL format:
 use Deinte\Peppol\Contracts\InvoiceTransformer;
 use Deinte\Peppol\Data\Invoice as PeppolInvoice;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\Storage;
 
 class MyInvoiceTransformer implements InvoiceTransformer
 {
     public function toPeppolInvoice(Model $invoice): PeppolInvoice
     {
+        // Read PDF from storage and encode as base64
+        $pdfContent = null;
+        $pdfFilename = null;
+
+        if ($invoice->pdf_path && Storage::disk('invoices')->exists($invoice->pdf_path)) {
+            $pdfContent = base64_encode(Storage::disk('invoices')->get($invoice->pdf_path));
+            $pdfFilename = basename($invoice->pdf_path);
+        }
+
         return new PeppolInvoice(
             senderVatNumber: config('company.vat_number'),
             recipientVatNumber: $invoice->customer->vat_number,
@@ -93,12 +103,18 @@ class MyInvoiceTransformer implements InvoiceTransformer
                 'unitPrice' => $line->unit_price,
                 'vatPerc' => $line->vat_percentage,
             ])->toArray(),
-            pdfPath: $invoice->pdf_path,
+            pdfContent: $pdfContent,      // Base64-encoded PDF (preferred)
+            pdfFilename: $pdfFilename,    // Original filename
             alreadySentToCustomer: $invoice->email_sent,
         );
     }
 }
 ```
+
+> **PDF Attachment Options:**
+> - `pdfContent`: Base64-encoded PDF content (preferred - transformer reads from storage)
+> - `pdfPath`: Local file path (connector will read the file)
+> - `pdfFilename`: Custom filename for the attachment
 
 Register it in a service provider:
 
@@ -319,6 +335,80 @@ PeppolStatus::DELIVERED_WITHOUT_CONFIRMATION   // Sent successfully
 PeppolStatus::ACCEPTED                         // Confirmed by recipient
 PeppolStatus::REJECTED                         // Rejected by recipient
 PeppolStatus::FAILED_DELIVERY                  // Failed to deliver
+```
+
+## Error Handling
+
+The package uses a simple exception hierarchy:
+
+```php
+use Deinte\Peppol\Exceptions\PeppolException;       // Base exception
+use Deinte\Peppol\Exceptions\ConnectorException;    // API/network errors
+use Deinte\Peppol\Exceptions\InvalidInvoiceException; // Invalid invoice data
+use Deinte\Peppol\Exceptions\InvoiceNotFoundException; // Invoice not found
+```
+
+### Catching Errors
+
+```php
+use Deinte\Peppol\Exceptions\ConnectorException;
+use Deinte\Peppol\Exceptions\PeppolException;
+
+try {
+    $status = Peppol::dispatchInvoice($peppolInvoice, $invoiceData);
+} catch (ConnectorException $e) {
+    // API error - check response data for details
+    $context = $e->getContext();
+    $statusCode = $context['status_code'] ?? null;
+    $responseData = $context['response_data'] ?? null;
+
+    Log::error('PEPPOL dispatch failed', [
+        'status_code' => $statusCode,
+        'response' => $responseData,
+    ]);
+} catch (PeppolException $e) {
+    // Other PEPPOL-related error
+    Log::error('PEPPOL error: ' . $e->getMessage());
+}
+```
+
+### Accessing Error Data from PeppolInvoice
+
+When dispatch fails, error details are stored in `connector_error`:
+
+```php
+$peppolInvoice = PeppolInvoice::find($id);
+
+if ($peppolInvoice->connector_status === 'FAILED') {
+    // Get structured error data (JSON decoded)
+    $errorData = $peppolInvoice->getConnectorErrorData();
+
+    // Structure: ['message' => '...', 'context' => ['status_code' => 500, 'response_data' => [...]]]
+    $message = $errorData['message'] ?? 'Unknown error';
+    $statusCode = $errorData['context']['status_code'] ?? null;
+    $apiResponse = $errorData['context']['response_data'] ?? null;
+}
+```
+
+### Common Error Codes (Scrada)
+
+| Error Code | Description | How to Handle |
+|------------|-------------|---------------|
+| 110365 | Invoice already exists | Invoice was previously sent - check existing invoices |
+| 100008 | Validation error | Check `innerErrors` for specific field errors |
+| 401 | Authentication failed | Verify API credentials |
+| 404 | Invoice not found | Invoice ID doesn't exist in connector |
+
+### Unsupported Operations
+
+Some operations throw `RuntimeException` when not supported:
+
+```php
+// These throw RuntimeException for Scrada connector:
+Peppol::registerCompany($company);      // Not supported - use Scrada portal
+Peppol::getReceivedInvoices($peppolId); // Not supported - sending only
+$connector->validateWebhookSignature(); // Not implemented
+$connector->parseWebhookPayload();      // Not implemented
 ```
 
 ## Creating Custom Connectors

@@ -77,7 +77,6 @@ interface PeppolConnector
      * @param  Company  $company  The company data to register
      * @return bool Returns true if registration was successful
      *
-     * @throws \Deinte\Peppol\Exceptions\RegistrationException
      * @throws \Deinte\Peppol\Exceptions\ConnectorException
      * @throws \RuntimeException If not supported by connector
      */
@@ -113,7 +112,7 @@ interface PeppolConnector
      * @param  array  $payload  The webhook payload
      * @return array Standardized webhook data
      *
-     * @throws \Deinte\Peppol\Exceptions\InvalidWebhookException
+     * @throws \RuntimeException If not supported by connector
      */
     public function parseWebhookPayload(array $payload): array;
 }
