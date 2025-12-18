@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Deinte\Peppol;
 
+use Deinte\Peppol\Commands\DebugPeppolInvoiceCommand;
 use Deinte\Peppol\Commands\DispatchPeppolInvoicesCommand;
 use Deinte\Peppol\Commands\PollPeppolStatusCommand;
 use Deinte\Peppol\Connectors\ScradaConnector;
@@ -37,6 +38,7 @@ class PeppolServiceProvider extends PackageServiceProvider
             ->name('peppol')
             ->hasConfigFile()
             ->hasCommands([
+                DebugPeppolInvoiceCommand::class,
                 DispatchPeppolInvoicesCommand::class,
                 PollPeppolStatusCommand::class,
             ])
