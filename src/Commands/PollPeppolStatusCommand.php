@@ -23,14 +23,12 @@ class PollPeppolStatusCommand extends Command
 
     protected $description = 'Poll delivery status for dispatched PEPPOL invoices';
 
-    public function __construct(
-        private readonly PeppolService $peppolService
-    ) {
-        parent::__construct();
-    }
+    private PeppolService $peppolService;
 
-    public function handle(): int
+    public function handle(PeppolService $peppolService): int
     {
+        $this->peppolService = $peppolService;
+
         if ($this->option('status')) {
             return $this->showStatus();
         }

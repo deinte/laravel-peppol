@@ -10,6 +10,7 @@ use Deinte\Peppol\Commands\PollPeppolStatusCommand;
 use Deinte\Peppol\Connectors\ScradaConnector;
 use Deinte\Peppol\Contracts\PeppolConnector;
 use InvalidArgumentException;
+use RuntimeException;
 use Spatie\LaravelPackageTools\Package;
 use Spatie\LaravelPackageTools\PackageServiceProvider;
 
@@ -58,8 +59,17 @@ class PeppolServiceProvider extends PackageServiceProvider
     public function packageRegistered(): void
     {
         // Bind the connector interface to the configured implementation
+        // Uses a closure so the connector is only created when actually resolved
         $this->app->singleton(PeppolConnector::class, function ($app) {
             $config = config('peppol');
+
+            // If config isn't loaded yet (during package discovery), throw helpful error
+            if (empty($config)) {
+                throw new RuntimeException(
+                    'PEPPOL config not loaded. Ensure the config file is published.'
+                );
+            }
+
             $connectorName = $config['default_connector'] ?? 'scrada';
             $connectorConfig = $config['connectors'][$connectorName] ?? [];
 
@@ -69,7 +79,7 @@ class PeppolServiceProvider extends PackageServiceProvider
             };
         });
 
-        // Bind the main service
+        // Bind the main service - also lazy, only created when resolved
         $this->app->singleton(PeppolService::class, function ($app) {
             return new PeppolService(
                 connector: $app->make(PeppolConnector::class),
