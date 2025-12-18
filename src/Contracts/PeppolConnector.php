@@ -7,6 +7,7 @@ namespace Deinte\Peppol\Contracts;
 use Deinte\Peppol\Data\Company;
 use Deinte\Peppol\Data\Invoice;
 use Deinte\Peppol\Data\InvoiceStatus;
+use RuntimeException;
 
 /**
  * Interface for PEPPOL network connectors.
@@ -78,7 +79,7 @@ interface PeppolConnector
      * @return bool Returns true if registration was successful
      *
      * @throws \Deinte\Peppol\Exceptions\ConnectorException
-     * @throws \RuntimeException If not supported by connector
+     * @throws RuntimeException If not supported by connector
      */
     public function registerCompany(Company $company): bool;
 
@@ -93,7 +94,7 @@ interface PeppolConnector
      * @return array<Invoice> Array of received invoices
      *
      * @throws \Deinte\Peppol\Exceptions\ConnectorException
-     * @throws \RuntimeException If not supported by connector
+     * @throws RuntimeException If not supported by connector
      */
     public function getReceivedInvoices(string $peppolId, array $filters = []): array;
 
@@ -112,7 +113,7 @@ interface PeppolConnector
      * @param  array  $payload  The webhook payload
      * @return array Standardized webhook data
      *
-     * @throws \RuntimeException If not supported by connector
+     * @throws RuntimeException If not supported by connector
      */
     public function parseWebhookPayload(array $payload): array;
 }

@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Deinte\Peppol\Data;
 
+use DateTimeInterface;
+
 /**
  * Represents an invoice to be sent via PEPPOL.
  *
@@ -24,8 +26,8 @@ class Invoice
         public readonly string $recipientVatNumber,
         public readonly ?string $recipientPeppolId,
         public readonly string $invoiceNumber,
-        public readonly \DateTimeInterface $invoiceDate,
-        public readonly \DateTimeInterface $dueDate,
+        public readonly DateTimeInterface $invoiceDate,
+        public readonly DateTimeInterface $dueDate,
         public readonly float $totalAmount,
         public readonly string $currency,
         public readonly array $lineItems,

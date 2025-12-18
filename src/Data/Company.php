@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Deinte\Peppol\Data;
 
 use Deinte\Peppol\Enums\EasCode;
+use InvalidArgumentException;
 
 /**
  * Represents a company on the PEPPOL network.
@@ -87,7 +88,7 @@ class Company
         if ($this->taxNumber || $this->country === 'BE') {
             try {
                 return EasCode::defaultSchemeForCountry($this->country ?? $this->guessCountryFromVat());
-            } catch (\InvalidArgumentException) {
+            } catch (InvalidArgumentException) {
                 // Country not supported, fall through to VAT scheme
             }
         }
@@ -95,7 +96,7 @@ class Company
         // 3. Try VAT scheme for country
         try {
             return EasCode::vatSchemeForCountry($this->country ?? $this->guessCountryFromVat());
-        } catch (\InvalidArgumentException) {
+        } catch (InvalidArgumentException) {
             return null;
         }
     }
