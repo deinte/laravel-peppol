@@ -19,6 +19,7 @@ use Deinte\ScradaSdk\Data\Common\Attachment;
 use Deinte\ScradaSdk\Data\Common\Customer;
 use Deinte\ScradaSdk\Data\SalesInvoice\CreateSalesInvoiceData;
 use Deinte\ScradaSdk\Data\SalesInvoice\InvoiceLine;
+use Deinte\ScradaSdk\Data\SalesInvoice\InvoicePaymentMethod;
 use Deinte\ScradaSdk\Data\SalesInvoice\SendStatusResponse;
 use Deinte\ScradaSdk\Enums\SendStatus;
 use Deinte\ScradaSdk\Enums\TaxNumberType;
@@ -504,11 +505,13 @@ class ScradaConnector implements PeppolConnector
             $peppolStatus = $this->mapSendStatusResponseToPeppolStatus($status);
 
             // Check if recipient is not on PEPPOL (stored but not delivered via PEPPOL)
+            // NONE means no send configuration in Scrada - typically because recipient not on PEPPOL
             $recipientNotOnPeppol = in_array($status->status, [
                 SendStatus::ERROR_NOT_ON_PEPPOL,
                 SendStatus::NOT_ON_PEPPOL_SEND_BY_EMAIL,
                 SendStatus::BLOCKED_SEND_BY_EMAIL,
                 SendStatus::BLOCKED,
+                SendStatus::NONE,
             ], true);
 
             // Use error message from response or status label for failed statuses
@@ -803,7 +806,10 @@ class ScradaConnector implements PeppolConnector
             lines: $lines,
             alreadySentToCustomer: $invoice->alreadySentToCustomer,
             attachments: $attachments,
-            paymentMethods: $invoice->paymentMethods,
+            paymentMethods: array_map(
+                fn (array $method) => InvoicePaymentMethod::fromArray($method),
+                $invoice->paymentMethods
+            ),
         );
     }
 
@@ -899,9 +905,11 @@ class ScradaConnector implements PeppolConnector
 
         // Handle "not on PEPPOL" cases first - these are NOT failures
         // The invoice IS stored in Scrada, just not delivered via PEPPOL
+        // NONE means no send configuration - typically because recipient not on PEPPOL
         if ($status === SendStatus::ERROR_NOT_ON_PEPPOL
             || $status === SendStatus::NOT_ON_PEPPOL_SEND_BY_EMAIL
             || $status === SendStatus::BLOCKED_SEND_BY_EMAIL
+            || $status === SendStatus::NONE
         ) {
             return PeppolStatus::DELIVERED_WITHOUT_CONFIRMATION;
         }
@@ -929,10 +937,10 @@ class ScradaConnector implements PeppolConnector
             SendStatus::PROCESSED => PeppolStatus::DELIVERED_WITHOUT_CONFIRMATION,
             SendStatus::RETRY => PeppolStatus::PENDING,
             SendStatus::CANCELED, SendStatus::ERROR, SendStatus::ERROR_ALREADY_SENT,
-            SendStatus::ERROR_SEND_BY_EMAIL, SendStatus::BLOCKED, SendStatus::NONE => PeppolStatus::FAILED_DELIVERY,
+            SendStatus::ERROR_SEND_BY_EMAIL, SendStatus::BLOCKED => PeppolStatus::FAILED_DELIVERY,
             // Already handled above, but for completeness
             SendStatus::ERROR_NOT_ON_PEPPOL, SendStatus::NOT_ON_PEPPOL_SEND_BY_EMAIL,
-            SendStatus::BLOCKED_SEND_BY_EMAIL => PeppolStatus::DELIVERED_WITHOUT_CONFIRMATION,
+            SendStatus::BLOCKED_SEND_BY_EMAIL, SendStatus::NONE => PeppolStatus::DELIVERED_WITHOUT_CONFIRMATION,
         };
     }
 
