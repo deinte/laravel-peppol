@@ -2,6 +2,13 @@
 
 All notable changes to `laravel-peppol` will be documented in this file.
 
+## [0.0.4] - 2025-12-22
+
+### Fixed
+- Made all migrations idempotent - they now check if columns/indexes exist before adding them
+- Migrations can now run multiple times safely without "duplicate column" errors
+- Fixed `down()` methods to check before dropping columns/indexes
+
 ## [0.0.3] - 2025-12-22
 
 ### Added

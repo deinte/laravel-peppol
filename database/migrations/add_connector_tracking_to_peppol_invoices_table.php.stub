@@ -15,26 +15,46 @@ return new class extends Migration
      */
     public function up(): void
     {
-        Schema::table('peppol_invoices', function (Blueprint $table) {
-            if (! Schema::hasColumn('peppol_invoices', 'connector_type')) {
+        if (! Schema::hasColumn('peppol_invoices', 'connector_type')) {
+            Schema::table('peppol_invoices', function (Blueprint $table) {
                 $table->string('connector_type')->nullable()->after('connector_invoice_id');
-            }
-            if (! Schema::hasColumn('peppol_invoices', 'connector_status')) {
+            });
+        }
+
+        if (! Schema::hasColumn('peppol_invoices', 'connector_status')) {
+            Schema::table('peppol_invoices', function (Blueprint $table) {
                 $table->string('connector_status')->default('PENDING')->after('connector_type');
-            }
-            if (! Schema::hasColumn('peppol_invoices', 'connector_error')) {
+            });
+        }
+
+        if (! Schema::hasColumn('peppol_invoices', 'connector_error')) {
+            Schema::table('peppol_invoices', function (Blueprint $table) {
                 $table->text('connector_error')->nullable()->after('connector_status');
-            }
-            if (! Schema::hasColumn('peppol_invoices', 'connector_uploaded_at')) {
+            });
+        }
+
+        if (! Schema::hasColumn('peppol_invoices', 'connector_uploaded_at')) {
+            Schema::table('peppol_invoices', function (Blueprint $table) {
                 $table->timestamp('connector_uploaded_at')->nullable()->after('connector_error');
-            }
-        });
+            });
+        }
     }
 
     public function down(): void
     {
         Schema::table('peppol_invoices', function (Blueprint $table) {
-            $table->dropColumn(['connector_type', 'connector_status', 'connector_error', 'connector_uploaded_at']);
+            $columnsToCheck = ['connector_type', 'connector_status', 'connector_error', 'connector_uploaded_at'];
+            $columnsToDrop = [];
+
+            foreach ($columnsToCheck as $column) {
+                if (Schema::hasColumn('peppol_invoices', $column)) {
+                    $columnsToDrop[] = $column;
+                }
+            }
+
+            if (! empty($columnsToDrop)) {
+                $table->dropColumn($columnsToDrop);
+            }
         });
     }
 };

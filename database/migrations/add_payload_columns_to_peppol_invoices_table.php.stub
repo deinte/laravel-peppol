@@ -26,7 +26,12 @@ return new class extends Migration
     public function down(): void
     {
         Schema::table('peppol_invoices', function (Blueprint $table) {
-            $table->dropColumn(['request_payload', 'poll_response']);
+            if (Schema::hasColumn('peppol_invoices', 'request_payload')) {
+                $table->dropColumn('request_payload');
+            }
+            if (Schema::hasColumn('peppol_invoices', 'poll_response')) {
+                $table->dropColumn('poll_response');
+            }
         });
     }
 };

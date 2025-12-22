@@ -8,33 +8,59 @@ return new class extends Migration
 {
     public function up(): void
     {
-        Schema::table('peppol_invoices', function (Blueprint $table) {
-            // Index for polling main query (scopeNeedsPolling)
-            $table->index(
-                ['status', 'dispatched_at', 'skip_peppol_delivery'],
-                'idx_peppol_invoices_polling_main'
-            );
+        $indexes = collect(Schema::getConnection()->getDoctrineSchemaManager()->listTableIndexes('peppol_invoices'));
 
-            // Index for failed invoice retry logic
-            $table->index(
-                ['status', 'poll_attempts', 'next_poll_at'],
-                'idx_peppol_invoices_polling_failed'
-            );
+        // Index for polling main query (scopeNeedsPolling)
+        if (! $indexes->has('idx_peppol_invoices_polling_main')) {
+            Schema::table('peppol_invoices', function (Blueprint $table) {
+                $table->index(
+                    ['status', 'dispatched_at', 'skip_peppol_delivery'],
+                    'idx_peppol_invoices_polling_main'
+                );
+            });
+        }
 
-            // Index for dispatch ready query (scopeReadyToDispatch)
-            $table->index(
-                ['status', 'dispatched_at', 'scheduled_dispatch_at'],
-                'idx_peppol_invoices_dispatch_ready'
-            );
-        });
+        // Index for failed invoice retry logic
+        if (! $indexes->has('idx_peppol_invoices_polling_failed')) {
+            Schema::table('peppol_invoices', function (Blueprint $table) {
+                $table->index(
+                    ['status', 'poll_attempts', 'next_poll_at'],
+                    'idx_peppol_invoices_polling_failed'
+                );
+            });
+        }
+
+        // Index for dispatch ready query (scopeReadyToDispatch)
+        if (! $indexes->has('idx_peppol_invoices_dispatch_ready')) {
+            Schema::table('peppol_invoices', function (Blueprint $table) {
+                $table->index(
+                    ['status', 'dispatched_at', 'scheduled_dispatch_at'],
+                    'idx_peppol_invoices_dispatch_ready'
+                );
+            });
+        }
     }
 
     public function down(): void
     {
-        Schema::table('peppol_invoices', function (Blueprint $table) {
-            $table->dropIndex('idx_peppol_invoices_polling_main');
-            $table->dropIndex('idx_peppol_invoices_polling_failed');
-            $table->dropIndex('idx_peppol_invoices_dispatch_ready');
-        });
+        $indexes = collect(Schema::getConnection()->getDoctrineSchemaManager()->listTableIndexes('peppol_invoices'));
+
+        if ($indexes->has('idx_peppol_invoices_polling_main')) {
+            Schema::table('peppol_invoices', function (Blueprint $table) {
+                $table->dropIndex('idx_peppol_invoices_polling_main');
+            });
+        }
+
+        if ($indexes->has('idx_peppol_invoices_polling_failed')) {
+            Schema::table('peppol_invoices', function (Blueprint $table) {
+                $table->dropIndex('idx_peppol_invoices_polling_failed');
+            });
+        }
+
+        if ($indexes->has('idx_peppol_invoices_dispatch_ready')) {
+            Schema::table('peppol_invoices', function (Blueprint $table) {
+                $table->dropIndex('idx_peppol_invoices_dispatch_ready');
+            });
+        }
     }
 };

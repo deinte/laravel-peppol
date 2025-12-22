@@ -20,7 +20,9 @@ return new class extends Migration
     public function down(): void
     {
         Schema::table('peppol_invoices', function (Blueprint $table) {
-            $table->dropColumn('skip_peppol_delivery');
+            if (Schema::hasColumn('peppol_invoices', 'skip_peppol_delivery')) {
+                $table->dropColumn('skip_peppol_delivery');
+            }
         });
     }
 };

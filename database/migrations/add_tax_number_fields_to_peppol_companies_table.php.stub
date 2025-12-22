@@ -24,7 +24,12 @@ return new class extends Migration
     public function down(): void
     {
         Schema::table('peppol_companies', function (Blueprint $table) {
-            $table->dropColumn(['tax_number', 'tax_number_scheme']);
+            if (Schema::hasColumn('peppol_companies', 'tax_number')) {
+                $table->dropColumn('tax_number');
+            }
+            if (Schema::hasColumn('peppol_companies', 'tax_number_scheme')) {
+                $table->dropColumn('tax_number_scheme');
+            }
         });
     }
 };
