@@ -145,6 +145,12 @@ return new class extends Migration
         // Step 8: Add new indexes for the simplified schema
         Schema::table('peppol_invoices', function (Blueprint $table) {
             $table->index('state', 'idx_state');
+
+            // Unique constraint to prevent duplicate invoices for the same invoiceable
+            $table->unique(['invoiceable_type', 'invoiceable_id'], 'unique_invoiceable');
+
+            // Index for connector lookups
+            $table->index('connector_invoice_id', 'idx_connector_invoice_id');
         });
 
         if (Schema::hasColumn('peppol_invoices', 'scheduled_at') && Schema::hasColumn('peppol_invoices', 'next_retry_at')) {
@@ -156,6 +162,9 @@ return new class extends Migration
         if (Schema::hasColumn('peppol_invoices', 'sent_at') && Schema::hasColumn('peppol_invoices', 'next_retry_at')) {
             Schema::table('peppol_invoices', function (Blueprint $table) {
                 $table->index(['state', 'sent_at', 'next_retry_at'], 'idx_poll_queue');
+
+                // Index for poll query with skip_delivery and poll_attempts
+                $table->index(['state', 'skip_delivery', 'poll_attempts', 'next_retry_at'], 'idx_poll_ready');
             });
         }
 

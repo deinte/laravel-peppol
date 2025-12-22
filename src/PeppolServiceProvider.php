@@ -104,13 +104,29 @@ class PeppolServiceProvider extends PackageServiceProvider
         $apiSecret = $config['api_secret'] ?? '';
         $companyId = $config['company_id'] ?? '';
 
-        // Don't validate during package discovery - allow empty values
-        // The connector will fail gracefully when actually used without credentials
+        // Validate required credentials
+        $missing = [];
+        if (empty($apiKey)) {
+            $missing[] = 'SCRADA_API_KEY';
+        }
+        if (empty($apiSecret)) {
+            $missing[] = 'SCRADA_API_SECRET';
+        }
+        if (empty($companyId)) {
+            $missing[] = 'SCRADA_COMPANY_ID';
+        }
+
+        if (! empty($missing)) {
+            throw new RuntimeException(
+                'Missing required Scrada configuration: ' . implode(', ', $missing) . '. '
+                . 'Please set these environment variables.'
+            );
+        }
 
         return new ScradaConnector(
-            apiKey: is_string($apiKey) ? $apiKey : '',
-            apiSecret: is_string($apiSecret) ? $apiSecret : '',
-            companyId: is_string($companyId) ? $companyId : '',
+            apiKey: $apiKey,
+            apiSecret: $apiSecret,
+            companyId: $companyId,
             baseUrl: is_string($config['base_url'] ?? null) ? $config['base_url'] : null,
         );
     }

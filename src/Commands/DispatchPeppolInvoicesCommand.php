@@ -9,6 +9,7 @@ use Deinte\Peppol\Jobs\DispatchPeppolInvoice;
 use Deinte\Peppol\Models\PeppolInvoice;
 use Exception;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -17,9 +18,15 @@ class DispatchPeppolInvoicesCommand extends Command
     protected $signature = 'peppol:dispatch-invoices
                             {--dry-run : Show what would be dispatched without actually dispatching}
                             {--limit=50 : Maximum number of invoices to dispatch}
+                            {--no-lock : Skip distributed lock (use with caution)}
                             {--status : Show dispatch queue status only}';
 
     protected $description = 'Dispatch scheduled PEPPOL invoices that are due';
+
+    /**
+     * Lock timeout in seconds (10 minutes).
+     */
+    private const LOCK_TIMEOUT = 600;
 
     public function handle(): int
     {
@@ -27,7 +34,24 @@ class DispatchPeppolInvoicesCommand extends Command
             return $this->showStatus();
         }
 
-        return $this->dispatchInvoices();
+        if ($this->option('no-lock')) {
+            return $this->dispatchInvoices();
+        }
+
+        $lock = Cache::lock('peppol:dispatch-invoices', self::LOCK_TIMEOUT);
+
+        if (! $lock->get()) {
+            $this->warn('Another dispatch process is already running. Use --no-lock to override.');
+            $this->log('warning', 'Dispatch skipped - lock held by another process');
+
+            return self::SUCCESS;
+        }
+
+        try {
+            return $this->dispatchInvoices();
+        } finally {
+            $lock->release();
+        }
     }
 
     protected function dispatchInvoices(): int

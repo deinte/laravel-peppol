@@ -16,6 +16,7 @@ use Deinte\Peppol\Models\PeppolCompany;
 use Deinte\Peppol\Models\PeppolInvoice;
 use Exception;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use RuntimeException;
 
@@ -118,31 +119,7 @@ class PeppolService
             'skip_delivery' => $skipDelivery,
         ]);
 
-        // Check for existing PeppolInvoice
-        $existingPeppolInvoice = PeppolInvoice::query()
-            ->where('invoiceable_type', $invoice::class)
-            ->where('invoiceable_id', $invoice->getKey())
-            ->first();
-
-        if ($existingPeppolInvoice) {
-            // Check if rescheduling is allowed
-            if (! $existingPeppolInvoice->state->canReschedule()) {
-                $this->log('warning', 'Cannot reschedule invoice - state does not allow it', [
-                    'peppol_invoice_id' => $existingPeppolInvoice->id,
-                    'state' => $existingPeppolInvoice->state->value,
-                ]);
-
-                throw new RuntimeException(
-                    "Cannot reschedule invoice in state '{$existingPeppolInvoice->state->value}'. Only scheduled or send_failed invoices can be rescheduled."
-                );
-            }
-
-            $this->log('info', 'Found existing PeppolInvoice - will reschedule', [
-                'peppol_invoice_id' => $existingPeppolInvoice->id,
-                'current_state' => $existingPeppolInvoice->state->value,
-            ]);
-        }
-
+        // Lookup company outside transaction (can be cached, has its own transaction)
         $recipientCompany = $this->lookupCompany($recipientVatNumber);
 
         // Only use explicit skipDelivery value - never infer from PEPPOL status
@@ -152,56 +129,85 @@ class PeppolService
 
         $scheduledAt = $dispatchAt ?? now()->addDays(config('peppol.dispatch.delay_days', 7));
 
-        $scheduleData = [
-            'recipient_peppol_company_id' => $recipientCompany?->id,
-            'scheduled_at' => $scheduledAt,
-            'state' => PeppolState::SCHEDULED,
-            'skip_delivery' => $skipDelivery,
-            'error_message' => null,
-            'error_details' => null,
-            'dispatch_attempts' => 0,
-            'next_retry_at' => null,
-        ];
+        // Wrap core database operations in transaction to ensure data integrity
+        return DB::transaction(function () use ($invoice, $recipientCompany, $scheduledAt, $skipDelivery) {
+            // Check for existing PeppolInvoice (with lock to prevent race conditions)
+            $existingPeppolInvoice = PeppolInvoice::query()
+                ->where('invoiceable_type', $invoice::class)
+                ->where('invoiceable_id', $invoice->getKey())
+                ->lockForUpdate()
+                ->first();
 
-        if ($existingPeppolInvoice) {
-            $existingPeppolInvoice->update($scheduleData);
+            if ($existingPeppolInvoice) {
+                // Check if rescheduling is allowed
+                if (! $existingPeppolInvoice->state->canReschedule()) {
+                    $this->log('warning', 'Cannot reschedule invoice - state does not allow it', [
+                        'peppol_invoice_id' => $existingPeppolInvoice->id,
+                        'state' => $existingPeppolInvoice->state->value,
+                    ]);
 
-            $existingPeppolInvoice->logs()->create([
-                'from_state' => $existingPeppolInvoice->state->value,
+                    throw new RuntimeException(
+                        "Cannot reschedule invoice in state '{$existingPeppolInvoice->state->value}'. Only scheduled or send_failed invoices can be rescheduled."
+                    );
+                }
+
+                $this->log('info', 'Found existing PeppolInvoice - will reschedule', [
+                    'peppol_invoice_id' => $existingPeppolInvoice->id,
+                    'current_state' => $existingPeppolInvoice->state->value,
+                ]);
+            }
+
+            $scheduleData = [
+                'recipient_peppol_company_id' => $recipientCompany?->id,
+                'scheduled_at' => $scheduledAt,
+                'state' => PeppolState::SCHEDULED,
+                'skip_delivery' => $skipDelivery,
+                'error_message' => null,
+                'error_details' => null,
+                'dispatch_attempts' => 0,
+                'next_retry_at' => null,
+            ];
+
+            if ($existingPeppolInvoice) {
+                $existingPeppolInvoice->update($scheduleData);
+
+                $existingPeppolInvoice->logs()->create([
+                    'from_state' => $existingPeppolInvoice->state->value,
+                    'to_state' => PeppolState::SCHEDULED->value,
+                    'message' => 'Invoice rescheduled',
+                    'actor' => auth()->user()?->email ?? 'system',
+                ]);
+
+                $this->log('info', 'Existing PeppolInvoice updated', [
+                    'peppol_invoice_id' => $existingPeppolInvoice->id,
+                    'scheduled_at' => $scheduledAt->format('Y-m-d H:i:s'),
+                ]);
+
+                return $existingPeppolInvoice->fresh();
+            }
+
+            $peppolInvoice = PeppolInvoice::create([
+                'invoiceable_type' => $invoice::class,
+                'invoiceable_id' => $invoice->getKey(),
+                'connector_type' => config('peppol.default_connector', 'scrada'),
+                ...$scheduleData,
+            ]);
+
+            $peppolInvoice->logs()->create([
+                'from_state' => null,
                 'to_state' => PeppolState::SCHEDULED->value,
-                'message' => 'Invoice rescheduled',
+                'message' => 'Invoice scheduled for dispatch',
                 'actor' => auth()->user()?->email ?? 'system',
             ]);
 
-            $this->log('info', 'Existing PeppolInvoice updated', [
-                'peppol_invoice_id' => $existingPeppolInvoice->id,
+            $this->log('info', 'New PeppolInvoice created', [
+                'peppol_invoice_id' => $peppolInvoice->id,
                 'scheduled_at' => $scheduledAt->format('Y-m-d H:i:s'),
+                'skip_delivery' => $skipDelivery,
             ]);
 
-            return $existingPeppolInvoice->fresh();
-        }
-
-        $peppolInvoice = PeppolInvoice::create([
-            'invoiceable_type' => $invoice::class,
-            'invoiceable_id' => $invoice->getKey(),
-            'connector_type' => config('peppol.default_connector', 'scrada'),
-            ...$scheduleData,
-        ]);
-
-        $peppolInvoice->logs()->create([
-            'from_state' => null,
-            'to_state' => PeppolState::SCHEDULED->value,
-            'message' => 'Invoice scheduled for dispatch',
-            'actor' => auth()->user()?->email ?? 'system',
-        ]);
-
-        $this->log('info', 'New PeppolInvoice created', [
-            'peppol_invoice_id' => $peppolInvoice->id,
-            'scheduled_at' => $scheduledAt->format('Y-m-d H:i:s'),
-            'skip_delivery' => $skipDelivery,
-        ]);
-
-        return $peppolInvoice;
+            return $peppolInvoice;
+        });
     }
 
     /**

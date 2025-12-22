@@ -67,11 +67,11 @@ return [
         // Number of days to wait before sending invoice after creation
         'delay_days' => env('PEPPOL_DISPATCH_DELAY', 7),
 
-        // Maximum number of retry attempts for failed dispatches
-        'max_retries' => env('PEPPOL_MAX_RETRIES', 3),
+        // Maximum number of dispatch attempts before marking as permanently failed
+        'max_attempts' => env('PEPPOL_MAX_ATTEMPTS', 3),
 
-        // Minutes to wait between retry attempts
-        'retry_delay_minutes' => env('PEPPOL_RETRY_DELAY', 60),
+        // Progressive backoff delays in minutes between retry attempts
+        'retry_delays' => [5, 15, 60],
 
         // Queue name for dispatch jobs
         'queue' => env('PEPPOL_DISPATCH_QUEUE', 'default'),
@@ -102,14 +102,13 @@ return [
     | Poll Retry Settings
     |--------------------------------------------------------------------------
     |
-    | Configure retry behavior for failed invoices. Failed invoices will be
-    | re-polled with exponential backoff to check if the recipient has
-    | registered on PEPPOL.
+    | Configure retry behavior for invoices. Invoices will be polled with
+    | progressive backoff to check delivery status.
     |
     */
 
     'poll' => [
-        // Maximum number of poll retry attempts for failed invoices
+        // Maximum number of poll retry attempts
         'max_attempts' => env('PEPPOL_POLL_MAX_ATTEMPTS', 50),
 
         // Minutes to wait between retry attempts (progressive backoff)
@@ -129,7 +128,7 @@ return [
     'tables' => [
         'companies' => 'peppol_companies',
         'invoices' => 'peppol_invoices',
-        'invoice_statuses' => 'peppol_invoice_statuses',
+        'invoice_logs' => 'peppol_invoice_logs',
     ],
 
     /*
@@ -144,7 +143,7 @@ return [
     'models' => [
         'company' => Deinte\Peppol\Models\PeppolCompany::class,
         'invoice' => Deinte\Peppol\Models\PeppolInvoice::class,
-        'invoice_status' => Deinte\Peppol\Models\PeppolInvoiceStatus::class,
+        'invoice_log' => Deinte\Peppol\Models\PeppolInvoiceLog::class,
     ],
 
     /*

@@ -34,6 +34,12 @@ class DispatchPeppolInvoice implements ShouldQueue
      */
     public int $tries = 1;
 
+    /**
+     * Job timeout in seconds.
+     * Scrada API timeout is 30s, add buffer for transformation and logging.
+     */
+    public int $timeout = 120;
+
     public function __construct(
         public readonly int $peppolInvoiceId,
     ) {

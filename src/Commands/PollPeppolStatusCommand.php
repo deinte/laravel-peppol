@@ -9,6 +9,7 @@ use Deinte\Peppol\Models\PeppolInvoice;
 use Deinte\Peppol\PeppolService;
 use Exception;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -19,9 +20,15 @@ class PollPeppolStatusCommand extends Command
                             {--force : Ignore next_retry_at schedule and poll immediately}
                             {--limit=100 : Maximum number of invoices to poll}
                             {--id= : Poll status for a specific PEPPOL invoice ID}
+                            {--no-lock : Skip distributed lock (use with caution)}
                             {--status : Show polling queue status only}';
 
     protected $description = 'Poll delivery status for dispatched PEPPOL invoices';
+
+    /**
+     * Lock timeout in seconds (30 minutes - polling can be slow).
+     */
+    private const LOCK_TIMEOUT = 1800;
 
     private PeppolService $peppolService;
 
@@ -37,7 +44,24 @@ class PollPeppolStatusCommand extends Command
             return $this->pollSingle((int) $invoiceId);
         }
 
-        return $this->pollAll();
+        if ($this->option('no-lock')) {
+            return $this->pollAll();
+        }
+
+        $lock = Cache::lock('peppol:poll-status', self::LOCK_TIMEOUT);
+
+        if (! $lock->get()) {
+            $this->warn('Another poll process is already running. Use --no-lock to override.');
+            $this->log('warning', 'Poll skipped - lock held by another process');
+
+            return self::SUCCESS;
+        }
+
+        try {
+            return $this->pollAll();
+        } finally {
+            $lock->release();
+        }
     }
 
     protected function pollAll(): int
