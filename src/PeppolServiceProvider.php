@@ -118,8 +118,8 @@ class PeppolServiceProvider extends PackageServiceProvider
 
         if (! empty($missing)) {
             throw new RuntimeException(
-                'Missing required Scrada configuration: ' . implode(', ', $missing) . '. '
-                . 'Please set these environment variables.'
+                'Missing required Scrada configuration: '.implode(', ', $missing).'. '
+                .'Please set these environment variables.'
             );
         }
 
