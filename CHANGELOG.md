@@ -2,6 +2,14 @@
 
 All notable changes to `laravel-peppol` will be documented in this file.
 
+## [0.0.5] - 2025-12-22
+
+### Removed
+- Removed redundant migrations that duplicated columns already in create migrations:
+  - `add_tax_number_fields_to_peppol_companies_table` (already in create_peppol_companies_table)
+  - `add_skip_peppol_delivery_to_peppol_invoices_table` (already in create_peppol_invoices_table)
+  - `add_connector_tracking_to_peppol_invoices_table` (already in create_peppol_invoices_table)
+
 ## [0.0.4] - 2025-12-22
 
 ### Fixed
