@@ -2,6 +2,26 @@
 
 All notable changes to `laravel-peppol` will be documented in this file.
 
+## [0.0.3] - 2025-12-22
+
+### Added
+- Distributed locking on `peppol:dispatch-invoices` command (10 min lock)
+- Distributed locking on `peppol:poll-status` command (30 min lock)
+- `--no-lock` flag to override locking when needed
+- Job timeout (120s) on `DispatchPeppolInvoice` to prevent hung workers
+- Database transaction with row locking in `scheduleInvoice()` to prevent race conditions
+- Environment variable validation - throws `RuntimeException` if `SCRADA_API_KEY`, `SCRADA_API_SECRET`, or `SCRADA_COMPANY_ID` are missing
+- Unique constraint on `(invoiceable_type, invoiceable_id)` to prevent duplicate invoices
+- Index on `connector_invoice_id` for faster lookups
+- Index on `(state, skip_delivery, poll_attempts, next_retry_at)` for optimized poll queries
+
+### Changed
+- Config key `dispatch.max_retries` renamed to `dispatch.max_attempts`
+- Config key `dispatch.retry_delay_minutes` replaced with `dispatch.retry_delays` array for progressive backoff
+
+### Fixed
+- Race condition when scheduling same invoice concurrently
+
 ## [0.0.2] - 2025-12-18
 
 ### Changed
