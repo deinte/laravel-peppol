@@ -12,6 +12,7 @@ use Deinte\Peppol\Data\Invoice;
 use Deinte\Peppol\Data\InvoiceStatus;
 use Deinte\Peppol\Enums\PeppolState;
 use Deinte\Peppol\Exceptions\PeppolException;
+use Deinte\Peppol\Jobs\DispatchPeppolInvoice;
 use Deinte\Peppol\Models\PeppolCompany;
 use Deinte\Peppol\Models\PeppolInvoice;
 use Exception;
@@ -100,6 +101,8 @@ class PeppolService
     /**
      * Schedule an invoice for PEPPOL dispatch.
      *
+     * When delay_days is 0, the invoice is dispatched immediately via the queue.
+     *
      * @param  Model  $invoice  The invoice model to schedule
      * @param  string  $recipientVatNumber  The recipient's VAT number
      * @param  DateTimeInterface|null  $dispatchAt  When to dispatch (defaults to delay_days from config)
@@ -111,12 +114,16 @@ class PeppolService
         ?DateTimeInterface $dispatchAt = null,
         ?bool $skipDelivery = null,
     ): PeppolInvoice {
+        $delayDays = (int) config('peppol.dispatch.delay_days', 7);
+
         $this->log('info', 'Scheduling invoice for PEPPOL dispatch', [
             'invoice_type' => $invoice::class,
             'invoice_id' => $invoice->getKey(),
             'recipient_vat' => $recipientVatNumber,
             'dispatch_at' => $dispatchAt?->format('Y-m-d H:i:s'),
             'skip_delivery' => $skipDelivery,
+            'delay_days' => $delayDays,
+            'immediate_dispatch' => $delayDays === 0 && $dispatchAt === null,
         ]);
 
         // Lookup company outside transaction (can be cached, has its own transaction)
@@ -127,10 +134,10 @@ class PeppolService
             $skipDelivery = false;
         }
 
-        $scheduledAt = $dispatchAt ?? now()->addDays(config('peppol.dispatch.delay_days', 7));
+        $scheduledAt = $dispatchAt ?? now()->addDays($delayDays);
 
         // Wrap core database operations in transaction to ensure data integrity
-        return DB::transaction(function () use ($invoice, $recipientCompany, $scheduledAt, $skipDelivery) {
+        $peppolInvoice = DB::transaction(function () use ($invoice, $recipientCompany, $scheduledAt, $skipDelivery) {
             // Check for existing PeppolInvoice (with lock to prevent race conditions)
             $existingPeppolInvoice = PeppolInvoice::query()
                 ->where('invoiceable_type', $invoice::class)
@@ -208,6 +215,17 @@ class PeppolService
 
             return $peppolInvoice;
         });
+
+        // Dispatch immediately if delay_days is 0 and no explicit dispatchAt was provided
+        if ($delayDays === 0 && $dispatchAt === null) {
+            $this->log('info', 'Dispatching invoice immediately (delay_days=0)', [
+                'peppol_invoice_id' => $peppolInvoice->id,
+            ]);
+
+            DispatchPeppolInvoice::dispatch($peppolInvoice->id);
+        }
+
+        return $peppolInvoice;
     }
 
     /**
