@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Deinte\Peppol\Commands;
 
 use Deinte\Peppol\Contracts\PeppolConnector;
+use Exception;
 use Illuminate\Console\Command;
 
 class PeppolHealthCommand extends Command
@@ -48,7 +49,7 @@ class PeppolHealthCommand extends Command
             }
 
             return self::FAILURE;
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             $this->error('✗ API connection failed');
             $this->line("  Error: <error>{$e->getMessage()}</error>");
             $this->newLine();
