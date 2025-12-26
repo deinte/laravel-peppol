@@ -116,4 +116,11 @@ interface PeppolConnector
      * @throws RuntimeException If not supported by connector
      */
     public function parseWebhookPayload(array $payload): array;
+
+    /**
+     * Check if the connector is properly configured and can reach the API.
+     *
+     * @return array{healthy: bool, message?: string, error?: string, company_count?: int}
+     */
+    public function healthCheck(): array;
 }

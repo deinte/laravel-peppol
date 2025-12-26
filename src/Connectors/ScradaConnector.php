@@ -970,4 +970,47 @@ class ScradaConnector implements PeppolConnector
 
         return false;
     }
+
+    /**
+     * Check if the connector is properly configured and can reach the Scrada API.
+     *
+     * @return array{healthy: bool, message?: string, error?: string, company_count?: int}
+     */
+    public function healthCheck(): array
+    {
+        $this->log('info', 'API: Performing health check');
+
+        try {
+            $companies = $this->client->companies()->get();
+            $companyCount = count($companies);
+
+            $this->log('info', 'API: Health check successful', [
+                'company_count' => $companyCount,
+            ]);
+
+            return [
+                'healthy' => true,
+                'message' => 'Successfully connected to Scrada API',
+                'company_count' => $companyCount,
+            ];
+        } catch (ScradaException $e) {
+            $this->log('error', 'API: Health check failed', [
+                'error' => $e->getMessage(),
+            ]);
+
+            return [
+                'healthy' => false,
+                'error' => $e->getMessage(),
+            ];
+        } catch (Exception $e) {
+            $this->log('error', 'API: Health check failed with unexpected error', [
+                'error' => $e->getMessage(),
+            ]);
+
+            return [
+                'healthy' => false,
+                'error' => $e->getMessage(),
+            ];
+        }
+    }
 }
