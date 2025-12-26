@@ -120,7 +120,7 @@ interface PeppolConnector
     /**
      * Check if the connector is properly configured and can reach the API.
      *
-     * @return array{healthy: bool, message?: string, error?: string, company_count?: int}
+     * @return array{healthy: bool, message?: string, error?: string}
      */
     public function healthCheck(): array;
 }

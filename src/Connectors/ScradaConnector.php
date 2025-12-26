@@ -974,24 +974,36 @@ class ScradaConnector implements PeppolConnector
     /**
      * Check if the connector is properly configured and can reach the Scrada API.
      *
-     * @return array{healthy: bool, message?: string, error?: string, company_count?: int}
+     * Performs a simple PEPPOL lookup to verify API connectivity.
+     *
+     * @return array{healthy: bool, message?: string, error?: string}
      */
     public function healthCheck(): array
     {
         $this->log('info', 'API: Performing health check');
 
         try {
-            $companies = $this->client->companies()->get();
-            $companyCount = count($companies);
+            // Use a known Belgian company to verify API connectivity
+            // We're not checking if the company exists, just that the API responds
+            $testCustomer = new Customer(
+                name: 'Health Check',
+                address: new Address(
+                    street: '-',
+                    streetNumber: '-',
+                    city: '-',
+                    zipCode: '-',
+                    countryCode: 'BE',
+                ),
+                vatNumber: 'BE0000000000',
+            );
 
-            $this->log('info', 'API: Health check successful', [
-                'company_count' => $companyCount,
-            ]);
+            $this->client->peppol()->lookupParty($testCustomer);
+
+            $this->log('info', 'API: Health check successful');
 
             return [
                 'healthy' => true,
                 'message' => 'Successfully connected to Scrada API',
-                'company_count' => $companyCount,
             ];
         } catch (ScradaException $e) {
             $this->log('error', 'API: Health check failed', [
