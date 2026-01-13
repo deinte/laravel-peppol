@@ -274,6 +274,28 @@ class PeppolService
         // Mark as sending (increments dispatch_attempts)
         $peppolInvoice->markAsSending();
 
+        // Dry-run mode: log payload and skip actual send
+        if (config('peppol.dispatch.dry_run', false)) {
+            $this->log('warning', 'DRY-RUN MODE: Skipping actual dispatch', [
+                'peppol_invoice_id' => $peppolInvoice->id,
+                'invoice_number' => $invoiceData->invoiceNumber,
+                'invoice_data' => $invoiceData->toArray(),
+            ]);
+
+            // Reset to scheduled state so it can be retried when dry-run is disabled
+            $peppolInvoice->update([
+                'state' => \Deinte\Peppol\Enums\PeppolState::SCHEDULED,
+                'dispatch_attempts' => $peppolInvoice->dispatch_attempts - 1,
+            ]);
+
+            return new InvoiceStatus(
+                connectorInvoiceId: 'dry-run',
+                status: \Deinte\Peppol\Enums\PeppolStatus::CREATED,
+                updatedAt: new DateTimeImmutable,
+                message: 'Dry-run mode - invoice not sent',
+            );
+        }
+
         try {
             $status = $this->connector->sendInvoice($invoiceData);
 

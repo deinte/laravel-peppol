@@ -810,6 +810,9 @@ class ScradaConnector implements PeppolConnector
                 fn (array $method) => InvoicePaymentMethod::fromArray($method),
                 $invoice->paymentMethods
             ),
+            purchaseOrderReference: $invoice->purchaseOrderReference,
+            projectReference: $invoice->projectReference,
+            salesOrderReference: $invoice->salesOrderReference,
         );
     }
 

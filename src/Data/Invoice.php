@@ -36,6 +36,9 @@ class Invoice
         public readonly ?string $pdfFilename = null,
         public readonly bool $alreadySentToCustomer = false,
         public readonly array $paymentMethods = [],
+        public readonly ?string $purchaseOrderReference = null,
+        public readonly ?string $projectReference = null,
+        public readonly ?string $salesOrderReference = null,
         public readonly ?array $additionalData = null,
     ) {}
 
@@ -61,6 +64,9 @@ class Invoice
             'pdf_filename' => $this->pdfFilename,
             'already_sent_to_customer' => $this->alreadySentToCustomer,
             'payment_methods' => $this->paymentMethods,
+            'purchase_order_reference' => $this->purchaseOrderReference,
+            'project_reference' => $this->projectReference,
+            'sales_order_reference' => $this->salesOrderReference,
             'additional_data' => $this->additionalData,
         ];
     }

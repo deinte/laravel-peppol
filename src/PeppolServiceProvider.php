@@ -8,6 +8,7 @@ use Deinte\Peppol\Commands\DebugPeppolInvoiceCommand;
 use Deinte\Peppol\Commands\DispatchPeppolInvoicesCommand;
 use Deinte\Peppol\Commands\PeppolHealthCommand;
 use Deinte\Peppol\Commands\PollPeppolStatusCommand;
+use Deinte\Peppol\Connectors\CircuitBreakerConnector;
 use Deinte\Peppol\Connectors\ScradaConnector;
 use Deinte\Peppol\Contracts\PeppolConnector;
 use InvalidArgumentException;
@@ -72,10 +73,22 @@ class PeppolServiceProvider extends PackageServiceProvider
             $connectorName = $config['default_connector'] ?? 'scrada';
             $connectorConfig = $config['connectors'][$connectorName] ?? [];
 
-            return match ($connectorName) {
+            $connector = match ($connectorName) {
                 'scrada' => $this->createScradaConnector($connectorConfig),
                 default => throw new InvalidArgumentException("Unknown PEPPOL connector: {$connectorName}"),
             };
+
+            // Wrap in circuit breaker if enabled
+            if ($config['circuit_breaker']['enabled'] ?? false) {
+                $connector = new CircuitBreakerConnector(
+                    connector: $connector,
+                    failureThreshold: (int) ($config['circuit_breaker']['failure_threshold'] ?? 5),
+                    timeoutSeconds: (int) ($config['circuit_breaker']['timeout_seconds'] ?? 300),
+                    successThreshold: (int) ($config['circuit_breaker']['success_threshold'] ?? 2),
+                );
+            }
+
+            return $connector;
         });
 
         // Bind the main service - also lazy, only created when resolved

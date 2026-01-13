@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Deinte\Peppol\Commands;
 
 use Deinte\Peppol\Enums\PeppolState;
+use Deinte\Peppol\Exceptions\CircuitBreakerOpenException;
 use Deinte\Peppol\Models\PeppolInvoice;
 use Deinte\Peppol\PeppolService;
 use Exception;
@@ -101,7 +102,7 @@ class PollPeppolStatusCommand extends Command
             $this->newLine();
         }
 
-        $stats = ['polled' => 0, 'updated' => 0, 'errors' => 0];
+        $stats = ['polled' => 0, 'updated' => 0, 'errors' => 0, 'circuit_breaker_stopped' => false];
         $processed = 0;
 
         // Use chunking for memory efficiency on large datasets
@@ -118,6 +119,11 @@ class PollPeppolStatusCommand extends Command
                         $this->outputDryRun($invoice);
                     } else {
                         $stats = $this->pollInvoice($invoice, $stats);
+
+                        // Stop if circuit breaker opened
+                        if ($stats['circuit_breaker_stopped']) {
+                            return false;
+                        }
                     }
 
                     $processed++;
@@ -150,6 +156,9 @@ class PollPeppolStatusCommand extends Command
             } else {
                 $this->line("  <comment>No change:</comment> {$info} - {$newState->label()}");
             }
+        } catch (CircuitBreakerOpenException) {
+            // Stop immediately - no logging needed
+            $stats['circuit_breaker_stopped'] = true;
         } catch (Exception $e) {
             $this->line("  <error>Failed:</error> {$info} - {$e->getMessage()}");
             $stats['errors']++;
@@ -300,6 +309,12 @@ class PollPeppolStatusCommand extends Command
     protected function outputSummary(array $stats, bool $dryRun): void
     {
         $this->newLine();
+
+        if ($stats['circuit_breaker_stopped'] ?? false) {
+            $this->error('Polling stopped - Circuit breaker is OPEN');
+            $this->comment('The PEPPOL API is temporarily unavailable. Check health status.');
+            $this->newLine();
+        }
 
         if (! $dryRun) {
             $this->info("Polled: {$stats['polled']}");
