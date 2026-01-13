@@ -284,13 +284,13 @@ class PeppolService
 
             // Reset to scheduled state so it can be retried when dry-run is disabled
             $peppolInvoice->update([
-                'state' => \Deinte\Peppol\Enums\PeppolState::SCHEDULED,
+                'state' => PeppolState::SCHEDULED,
                 'dispatch_attempts' => $peppolInvoice->dispatch_attempts - 1,
             ]);
 
             return new InvoiceStatus(
                 connectorInvoiceId: 'dry-run',
-                status: \Deinte\Peppol\Enums\PeppolStatus::CREATED,
+                status: Enums\PeppolStatus::CREATED,
                 updatedAt: new DateTimeImmutable,
                 message: 'Dry-run mode - invoice not sent',
             );

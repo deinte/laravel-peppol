@@ -110,10 +110,10 @@ class CircuitBreakerConnector implements PeppolConnector
     public function getStatus(): array
     {
         $state = $this->getState();
-        $failures = (int) Cache::get(self::CACHE_PREFIX . 'failures', 0);
-        $successes = (int) Cache::get(self::CACHE_PREFIX . 'successes', 0);
-        $lastFailure = Cache::get(self::CACHE_PREFIX . 'last_failure');
-        $reason = Cache::get(self::CACHE_PREFIX . 'reason');
+        $failures = (int) Cache::get(self::CACHE_PREFIX.'failures', 0);
+        $successes = (int) Cache::get(self::CACHE_PREFIX.'successes', 0);
+        $lastFailure = Cache::get(self::CACHE_PREFIX.'last_failure');
+        $reason = Cache::get(self::CACHE_PREFIX.'reason');
 
         $retryAfter = null;
         if ($state === 'open' && $lastFailure) {
@@ -137,12 +137,12 @@ class CircuitBreakerConnector implements PeppolConnector
      */
     public function reset(): void
     {
-        Cache::forget(self::CACHE_PREFIX . 'state');
-        Cache::forget(self::CACHE_PREFIX . 'failures');
-        Cache::forget(self::CACHE_PREFIX . 'successes');
-        Cache::forget(self::CACHE_PREFIX . 'last_failure');
-        Cache::forget(self::CACHE_PREFIX . 'logged_open');
-        Cache::forget(self::CACHE_PREFIX . 'reason');
+        Cache::forget(self::CACHE_PREFIX.'state');
+        Cache::forget(self::CACHE_PREFIX.'failures');
+        Cache::forget(self::CACHE_PREFIX.'successes');
+        Cache::forget(self::CACHE_PREFIX.'last_failure');
+        Cache::forget(self::CACHE_PREFIX.'logged_open');
+        Cache::forget(self::CACHE_PREFIX.'reason');
 
         $this->log('info', 'Circuit breaker reset to closed state');
     }
@@ -151,6 +151,7 @@ class CircuitBreakerConnector implements PeppolConnector
      * Execute an operation through the circuit breaker.
      *
      * @template T
+     *
      * @param  Closure(): T  $operation
      * @return T
      */
@@ -160,15 +161,15 @@ class CircuitBreakerConnector implements PeppolConnector
 
         // Check if circuit is open
         if ($state === 'open') {
-            $lastFailure = Cache::get(self::CACHE_PREFIX . 'last_failure', 0);
-            $reason = Cache::get(self::CACHE_PREFIX . 'reason');
+            $lastFailure = Cache::get(self::CACHE_PREFIX.'last_failure', 0);
+            $reason = Cache::get(self::CACHE_PREFIX.'reason');
             $timeout = $reason === 'rate_limit' ? 300 : $this->timeoutSeconds;
             $elapsed = time() - $lastFailure;
             $retryAfter = $timeout - $elapsed;
 
             if ($elapsed < $timeout) {
                 // Log only once every 5 minutes to avoid flooding
-                Cache::remember(self::CACHE_PREFIX . 'logged_open', 300, function () use ($retryAfter, $reason) {
+                Cache::remember(self::CACHE_PREFIX.'logged_open', 300, function () use ($retryAfter, $reason) {
                     $this->log('info', 'Circuit breaker is OPEN - blocking requests', [
                         'retry_after_seconds' => $retryAfter,
                         'reason' => $reason,
@@ -184,7 +185,7 @@ class CircuitBreakerConnector implements PeppolConnector
 
             // Timeout elapsed, transition to half-open
             $this->setState('half_open');
-            Cache::put(self::CACHE_PREFIX . 'successes', 0, now()->addHours(1));
+            Cache::put(self::CACHE_PREFIX.'successes', 0, now()->addHours(1));
             $this->log('info', 'Circuit breaker transitioning to HALF_OPEN', [
                 'operation' => $operationName,
             ]);
@@ -207,16 +208,16 @@ class CircuitBreakerConnector implements PeppolConnector
         $state = $this->getState();
 
         if ($state === 'half_open') {
-            $successes = (int) Cache::increment(self::CACHE_PREFIX . 'successes');
+            $successes = (int) Cache::increment(self::CACHE_PREFIX.'successes');
 
             if ($successes >= $this->successThreshold) {
                 // Recovery confirmed, close circuit
                 $this->setState('closed');
-                Cache::put(self::CACHE_PREFIX . 'failures', 0, now()->addHours(1));
-                Cache::forget(self::CACHE_PREFIX . 'successes');
-                Cache::forget(self::CACHE_PREFIX . 'last_failure');
-                Cache::forget(self::CACHE_PREFIX . 'logged_open');
-                Cache::forget(self::CACHE_PREFIX . 'reason');
+                Cache::put(self::CACHE_PREFIX.'failures', 0, now()->addHours(1));
+                Cache::forget(self::CACHE_PREFIX.'successes');
+                Cache::forget(self::CACHE_PREFIX.'last_failure');
+                Cache::forget(self::CACHE_PREFIX.'logged_open');
+                Cache::forget(self::CACHE_PREFIX.'reason');
 
                 $this->log('info', 'Circuit breaker CLOSED - service recovered', [
                     'operation' => $operationName,
@@ -225,9 +226,9 @@ class CircuitBreakerConnector implements PeppolConnector
             }
         } elseif ($state === 'closed') {
             // Reset failure count on success
-            $failures = (int) Cache::get(self::CACHE_PREFIX . 'failures', 0);
+            $failures = (int) Cache::get(self::CACHE_PREFIX.'failures', 0);
             if ($failures > 0) {
-                Cache::decrement(self::CACHE_PREFIX . 'failures');
+                Cache::decrement(self::CACHE_PREFIX.'failures');
             }
         }
     }
@@ -235,15 +236,15 @@ class CircuitBreakerConnector implements PeppolConnector
     private function recordFailure(string $operationName, Throwable $e): void
     {
         $state = $this->getState();
-        Cache::put(self::CACHE_PREFIX . 'last_failure', time(), now()->addHours(1));
+        Cache::put(self::CACHE_PREFIX.'last_failure', time(), now()->addHours(1));
 
         // Check for rate limit (429) - open immediately
         $isRateLimit = str_contains($e->getMessage(), '429') || str_contains($e->getMessage(), 'Rate limit');
 
         if ($isRateLimit) {
             $this->setState('open');
-            Cache::put(self::CACHE_PREFIX . 'reason', 'rate_limit', now()->addHours(1));
-            Cache::forget(self::CACHE_PREFIX . 'logged_open');
+            Cache::put(self::CACHE_PREFIX.'reason', 'rate_limit', now()->addHours(1));
+            Cache::forget(self::CACHE_PREFIX.'logged_open');
             $this->log('warning', 'Circuit breaker OPENED - rate limit (429)', [
                 'operation' => $operationName,
                 'error' => $e->getMessage(),
@@ -260,11 +261,11 @@ class CircuitBreakerConnector implements PeppolConnector
                 'error' => $e->getMessage(),
             ]);
         } else {
-            $failures = (int) Cache::increment(self::CACHE_PREFIX . 'failures');
+            $failures = (int) Cache::increment(self::CACHE_PREFIX.'failures');
 
             if ($failures >= $this->failureThreshold) {
                 $this->setState('open');
-                Cache::put(self::CACHE_PREFIX . 'reason', 'failures', now()->addHours(1));
+                Cache::put(self::CACHE_PREFIX.'reason', 'failures', now()->addHours(1));
                 $this->log('error', 'Circuit breaker OPENED - too many failures', [
                     'operation' => $operationName,
                     'failures' => $failures,
@@ -284,12 +285,12 @@ class CircuitBreakerConnector implements PeppolConnector
 
     private function getState(): string
     {
-        return Cache::get(self::CACHE_PREFIX . 'state', 'closed');
+        return Cache::get(self::CACHE_PREFIX.'state', 'closed');
     }
 
     private function setState(string $state): void
     {
-        Cache::put(self::CACHE_PREFIX . 'state', $state, now()->addHours(1));
+        Cache::put(self::CACHE_PREFIX.'state', $state, now()->addHours(1));
     }
 
     private function log(string $level, string $message, array $context = []): void
