@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Deinte\Peppol\Commands;
 
+use Deinte\Peppol\Connectors\CircuitBreakerConnector;
 use Deinte\Peppol\Connectors\ScradaConnector;
 use Deinte\Peppol\Contracts\PeppolConnector;
 use Deinte\Peppol\Data\Invoice;
@@ -148,6 +149,11 @@ class DebugPeppolInvoiceCommand extends Command
      */
     public static function previewConnectorPayload(Invoice $invoice, PeppolConnector $connector): array
     {
+        // Unwrap circuit breaker to get the actual connector
+        if ($connector instanceof CircuitBreakerConnector) {
+            $connector = $connector->getWrappedConnector();
+        }
+
         if ($connector instanceof ScradaConnector) {
             $scradaData = $connector->transformInvoiceToScradaFormat($invoice);
 
