@@ -36,6 +36,15 @@ class CircuitBreakerConnector implements PeppolConnector
         private readonly int $successThreshold = 2,
     ) {}
 
+    /**
+     * Get the wrapped connector instance.
+     * Useful for debugging/inspection without circuit breaker overhead.
+     */
+    public function getWrappedConnector(): PeppolConnector
+    {
+        return $this->connector;
+    }
+
     public function lookupCompany(string $vatNumber, ?string $taxNumber = null, ?string $country = null): ?Company
     {
         return $this->execute(
