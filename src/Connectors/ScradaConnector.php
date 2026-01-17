@@ -21,6 +21,7 @@ use Deinte\ScradaSdk\Data\SalesInvoice\CreateSalesInvoiceData;
 use Deinte\ScradaSdk\Data\SalesInvoice\InvoiceLine;
 use Deinte\ScradaSdk\Data\SalesInvoice\InvoicePaymentMethod;
 use Deinte\ScradaSdk\Data\SalesInvoice\SendStatusResponse;
+use Deinte\ScradaSdk\Data\VatTypeId;
 use Deinte\ScradaSdk\Enums\SendStatus;
 use Deinte\ScradaSdk\Enums\TaxNumberType;
 use Deinte\ScradaSdk\Enums\VatType;
@@ -692,7 +693,7 @@ class ScradaConnector implements PeppolConnector
         ]);
 
         $lineNumber = 0;
-        $lines = array_map(function ($lineItem) use (&$lineNumber, $invoice, $isDomestic) {
+        $lines = array_map(function ($lineItem) use (&$lineNumber, $invoice, $isDomestic, $customerCountry) {
             $lineNumber++;
             $vatPercentage = (float) ($lineItem['vatPerc'] ?? $lineItem['vatPercentage'] ?? 21);
             $totalExclVat = isset($lineItem['totalExclVat']) ? (float) $lineItem['totalExclVat'] : null;
@@ -704,12 +705,36 @@ class ScradaConnector implements PeppolConnector
                 ? VatType::fromPercentageDomestic($vatPercentage)
                 : VatType::fromPercentageCrossBorderB2B($vatPercentage);
 
+            // Determine vatTypeID (UUID) based on customer country and VAT percentage
+            // This is required by Scrada API for correct VAT reporting per country
+            $vatTypeID = null;
+            if (VatTypeId::isCountrySupported($customerCountry)) {
+                try {
+                    // For cross-border B2B (0% VAT), use "NA" (not applicable)
+                    if (! $isDomestic && $vatPercentage === 0.0) {
+                        $vatTypeID = VatTypeId::notApplicable($customerCountry)->getValue();
+                    } else {
+                        $vatTypeID = VatTypeId::fromCountryAndPercentage($customerCountry, $vatPercentage)->getValue();
+                    }
+                } catch (InvalidArgumentException $e) {
+                    // Log warning but continue with fallback to integer vatType
+                    $this->log('warning', 'API: Could not determine vatTypeID, using vatType fallback', [
+                        'invoice_number' => $invoice->invoiceNumber,
+                        'customer_country' => $customerCountry,
+                        'vat_percentage' => $vatPercentage,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+
             $this->log('debug', 'API: Creating InvoiceLine', [
                 'invoice_number' => $invoice->invoiceNumber,
                 'line_number' => $lineNumber,
                 'vatPercentage' => $vatPercentage,
                 'vatType' => $vatType,
+                'vatTypeID' => $vatTypeID,
                 'is_domestic' => $isDomestic,
+                'customer_country' => $customerCountry,
                 'totalExclVat' => $totalExclVat,
                 'vatAmount' => $vatAmount,
             ]);
@@ -723,6 +748,7 @@ class ScradaConnector implements PeppolConnector
                 lineNumber: $lineNumber,
                 totalExclVat: $totalExclVat,
                 vatAmount: $vatAmount,
+                vatTypeID: $vatTypeID,
             );
         }, $invoice->lineItems);
 
@@ -792,6 +818,9 @@ class ScradaConnector implements PeppolConnector
         // Build attachments array
         $attachments = $this->buildAttachments($invoice);
 
+        // Extract delivery data if provided (for Event invoices / Peppol e-invoicing)
+        $deliveryData = $invoice->additionalData['delivery'] ?? [];
+
         return new CreateSalesInvoiceData(
             bookYear: $invoice->invoiceDate->format('Y'),
             journal: $invoice->additionalData['journal'] ?? 'SALES',
@@ -813,6 +842,12 @@ class ScradaConnector implements PeppolConnector
             purchaseOrderReference: $invoice->purchaseOrderReference,
             projectReference: $invoice->projectReference,
             salesOrderReference: $invoice->salesOrderReference,
+            deliveryDate: $deliveryData['date'] ?? null,
+            deliveryStreet: $deliveryData['street'] ?? null,
+            deliveryStreetNumber: $deliveryData['streetNumber'] ?? null,
+            deliveryCity: $deliveryData['city'] ?? null,
+            deliveryZipCode: $deliveryData['zipCode'] ?? null,
+            deliveryCountryCode: $deliveryData['countryCode'] ?? null,
         );
     }
 
