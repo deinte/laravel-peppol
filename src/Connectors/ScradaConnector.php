@@ -115,7 +115,7 @@ class ScradaConnector implements PeppolConnector
         $startTime = microtime(true);
 
         try {
-            $peppolID = EasCode::GLN->value . ":{$glnNumber}";
+            $peppolID = EasCode::GLN->value.":{$glnNumber}";
 
             $customer = new Customer(
                 name: 'Lookup',
@@ -517,7 +517,7 @@ class ScradaConnector implements PeppolConnector
     private function doGlnLookup(string $glnNumber, ?string $country): ?object
     {
         $effectiveCountry = $country ?? 'BE';
-        $peppolID = EasCode::GLN->value . ":{$glnNumber}";
+        $peppolID = EasCode::GLN->value.":{$glnNumber}";
 
         $customer = new Customer(
             name: 'Lookup',
