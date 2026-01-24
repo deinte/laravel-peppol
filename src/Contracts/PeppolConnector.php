@@ -21,11 +21,12 @@ use RuntimeException;
 interface PeppolConnector
 {
     /**
-     * Look up a company on the PEPPOL network.
+     * Look up a company on the PEPPOL network by VAT number.
      *
      * @param  string  $vatNumber  The VAT number to search for (e.g., 'BE0123456789')
      * @param  string|null  $taxNumber  Optional tax/enterprise number (e.g., KvK, CBE)
      * @param  string|null  $country  ISO 3166-1 alpha-2 country code
+     * @param  string|null  $glnNumber  Optional GLN as fallback if VAT lookup fails
      * @return Company|null Returns company data if found, null otherwise
      *
      * @throws \Deinte\Peppol\Exceptions\ConnectorException
@@ -34,7 +35,19 @@ interface PeppolConnector
         string $vatNumber,
         ?string $taxNumber = null,
         ?string $country = null,
+        ?string $glnNumber = null,
     ): ?Company;
+
+    /**
+     * Look up a company on the PEPPOL network by GLN (Global Location Number).
+     *
+     * @param  string  $glnNumber  The 13-digit GLN to search for
+     * @param  string  $country  ISO 3166-1 alpha-2 country code (e.g., 'NL', 'BE')
+     * @return Company|null Returns company data if found, null otherwise
+     *
+     * @throws \Deinte\Peppol\Exceptions\ConnectorException
+     */
+    public function lookupCompanyByGln(string $glnNumber, string $country): ?Company;
 
     /**
      * Send an invoice via the PEPPOL network.

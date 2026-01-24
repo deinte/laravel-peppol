@@ -45,11 +45,23 @@ class CircuitBreakerConnector implements PeppolConnector
         return $this->connector;
     }
 
-    public function lookupCompany(string $vatNumber, ?string $taxNumber = null, ?string $country = null): ?Company
+    public function lookupCompany(
+        string $vatNumber,
+        ?string $taxNumber = null,
+        ?string $country = null,
+        ?string $glnNumber = null,
+    ): ?Company {
+        return $this->execute(
+            fn () => $this->connector->lookupCompany($vatNumber, $taxNumber, $country, $glnNumber),
+            'lookupCompany'
+        );
+    }
+
+    public function lookupCompanyByGln(string $glnNumber, string $country): ?Company
     {
         return $this->execute(
-            fn () => $this->connector->lookupCompany($vatNumber, $taxNumber, $country),
-            'lookupCompany'
+            fn () => $this->connector->lookupCompanyByGln($glnNumber, $country),
+            'lookupCompanyByGln'
         );
     }
 

@@ -17,6 +17,7 @@ use Deinte\Peppol\Exceptions\InvoiceNotFoundException;
 use Deinte\ScradaSdk\Data\Common\Address;
 use Deinte\ScradaSdk\Data\Common\Attachment;
 use Deinte\ScradaSdk\Data\Common\Customer;
+use Deinte\ScradaSdk\Data\Common\Delivery;
 use Deinte\ScradaSdk\Data\SalesInvoice\CreateSalesInvoiceData;
 use Deinte\ScradaSdk\Data\SalesInvoice\InvoiceLine;
 use Deinte\ScradaSdk\Data\SalesInvoice\InvoicePaymentMethod;
@@ -67,19 +68,148 @@ class ScradaConnector implements PeppolConnector
     }
 
     /**
-     * Lookup a company on the PEPPOL network.
+     * Lookup a company on the PEPPOL network by VAT number.
      *
      * For countries with tax number schemes (BE, NL, FR), first tries lookup by tax number.
-     * If not found, falls back to VAT number lookup.
+     * If glnNumber is provided, it will be used as a fallback if VAT lookup fails.
      *
-     * @param  string  $vatNumber  The VAT number to lookup
+     * @param  string  $vatNumber  VAT number to lookup
      * @param  string|null  $taxNumber  Optional tax/enterprise number (e.g., KvK, CBE)
-     * @param  string|null  $country  ISO 3166-1 alpha-2 country code
+     * @param  string|null  $country  ISO country code
+     * @param  string|null  $glnNumber  Optional GLN as fallback
      */
     public function lookupCompany(
         string $vatNumber,
         ?string $taxNumber = null,
         ?string $country = null,
+        ?string $glnNumber = null,
+    ): ?Company {
+        return $this->lookupByVatWithGlnFallback($vatNumber, $taxNumber, $country, $glnNumber);
+    }
+
+    /**
+     * Lookup a company on the PEPPOL network by GLN (Global Location Number).
+     *
+     * @param  string  $glnNumber  The 13-digit GLN to lookup
+     * @param  string  $country  ISO country code (e.g., 'NL', 'BE')
+     */
+    public function lookupCompanyByGln(string $glnNumber, string $country): ?Company
+    {
+        return $this->lookupByGlnOnly($glnNumber, $country);
+    }
+
+    /**
+     * Lookup by GLN only (no VAT number).
+     *
+     * @return Company|null Company data if found on PEPPOL network
+     */
+    private function lookupByGlnOnly(string $glnNumber, ?string $country): ?Company
+    {
+        $effectiveCountry = $country ?? 'BE';
+
+        $this->log('info', 'API: Looking up company by GLN only', [
+            'gln_number' => $glnNumber,
+            'country' => $effectiveCountry,
+        ]);
+
+        $startTime = microtime(true);
+
+        try {
+            $peppolID = EasCode::GLN->value . ":{$glnNumber}";
+
+            $customer = new Customer(
+                name: 'Lookup',
+                address: new Address(
+                    street: '-',
+                    streetNumber: '-',
+                    city: '-',
+                    zipCode: '-',
+                    countryCode: $effectiveCountry,
+                ),
+                peppolID: $peppolID,
+                glnNumber: $glnNumber,
+            );
+
+            $this->log('debug', 'API: Scrada lookupParty GLN-only customer', [
+                'customer' => $customer->toArray(),
+            ]);
+
+            $result = $this->client->peppol()->lookupParty($customer);
+            $duration = round((microtime(true) - $startTime) * 1000, 2);
+
+            $this->log('debug', 'API: Scrada lookupParty GLN-only response', [
+                'gln_number' => $glnNumber,
+                'duration_ms' => $duration,
+                'can_receive_invoices' => $result->canReceiveInvoices(),
+                'meta' => $result->meta ?? [],
+            ]);
+
+            if (! $result->canReceiveInvoices()) {
+                $this->log('info', 'API: Company NOT found on PEPPOL network via GLN', [
+                    'gln_number' => $glnNumber,
+                    'duration_ms' => $duration,
+                ]);
+
+                return new Company(
+                    vatNumber: '',
+                    peppolId: null,
+                    country: $effectiveCountry,
+                    taxNumberScheme: EasCode::GLN,
+                );
+            }
+
+            $peppolId = $this->buildPeppolId(EasCode::GLN, $glnNumber, $result->meta);
+
+            $this->log('info', 'API: Company found on PEPPOL network via GLN', [
+                'gln_number' => $glnNumber,
+                'peppol_id' => $peppolId,
+                'duration_ms' => $duration,
+            ]);
+
+            return new Company(
+                vatNumber: '',
+                peppolId: $peppolId,
+                country: $effectiveCountry,
+                taxNumberScheme: EasCode::GLN,
+                metadata: $result->meta,
+            );
+        } catch (ScradaException $e) {
+            $duration = round((microtime(true) - $startTime) * 1000, 2);
+
+            $this->log('error', 'API: Scrada API error during GLN lookup', [
+                'gln_number' => $glnNumber,
+                'error' => $e->getMessage(),
+                'code' => $e->getCode(),
+                'duration_ms' => $duration,
+            ]);
+
+            throw ConnectorException::apiError($e->getMessage(), $e->getCode(), $e->getResponseData());
+        } catch (Exception $e) {
+            $duration = round((microtime(true) - $startTime) * 1000, 2);
+
+            $this->log('error', 'API: Connection failed during GLN lookup', [
+                'gln_number' => $glnNumber,
+                'error' => $e->getMessage(),
+                'duration_ms' => $duration,
+            ]);
+
+            throw ConnectorException::connectionFailed($e->getMessage());
+        }
+    }
+
+    /**
+     * Lookup by VAT number with optional GLN fallback.
+     *
+     * Tries in order:
+     * 1. Tax number (enterprise number) for BE/NL/FR
+     * 2. VAT number
+     * 3. GLN (if provided)
+     */
+    private function lookupByVatWithGlnFallback(
+        string $vatNumber,
+        ?string $taxNumber,
+        ?string $country,
+        ?string $glnNumber,
     ): ?Company {
         $company = new Company(
             vatNumber: $vatNumber,
@@ -90,14 +220,12 @@ class ScradaConnector implements PeppolConnector
         $lookupIdentifier = $company->getLookupIdentifier();
         $lookupScheme = $company->getLookupScheme();
         $usedTaxNumberLookup = $this->mapEasSchemeToScradaTaxType($lookupScheme) !== null;
-
-        // Use the derived lookup identifier as tax number if different from VAT
-        // This captures the enterprise number for BE, KvK for NL, etc.
         $derivedTaxNumber = $taxNumber ?? ($lookupIdentifier !== $vatNumber ? $lookupIdentifier : null);
 
         $this->log('info', 'API: Looking up company on PEPPOL network', [
             'vat_number' => $vatNumber,
             'tax_number' => $derivedTaxNumber,
+            'gln_number' => $glnNumber,
             'country' => $company->country,
             'lookup_identifier' => $lookupIdentifier,
             'lookup_scheme' => $lookupScheme?->value,
@@ -107,15 +235,19 @@ class ScradaConnector implements PeppolConnector
         $startTime = microtime(true);
 
         try {
-            // First attempt: lookup by tax number (enterprise number) if applicable
-            $customerForLookup = $this->buildLookupCustomer($lookupIdentifier, $lookupScheme, $vatNumber);
+            // Step 1: Try tax number lookup (enterprise number for BE/NL/FR)
+            $customerForLookup = $this->buildLookupCustomer(
+                $lookupIdentifier,
+                $lookupScheme,
+                $vatNumber,
+                $glnNumber
+            );
 
             $this->log('debug', 'API: Scrada lookupParty customer', [
                 'customer' => $customerForLookup->toArray(),
             ]);
 
             $result = $this->client->peppol()->lookupParty($customerForLookup);
-
             $duration = round((microtime(true) - $startTime) * 1000, 2);
 
             $this->log('debug', 'API: Scrada lookupParty response received', [
@@ -126,27 +258,24 @@ class ScradaConnector implements PeppolConnector
                 'meta' => $result->meta ?? [],
             ]);
 
-            // If not found with tax number, try fallback to VAT number
+            // Step 2: If tax number lookup failed, try VAT number only
             if (! $result->canReceiveInvoices() && $usedTaxNumberLookup) {
-                $this->log('info', 'API: Tax number lookup returned not found, trying VAT number fallback', [
+                $this->log('info', 'API: Tax number lookup not found, trying VAT fallback', [
                     'vat_number' => $vatNumber,
-                    'lookup_identifier' => $lookupIdentifier,
                 ]);
 
                 $fallbackResult = $this->lookupByVatNumberOnly($vatNumber, $company->country);
 
                 if ($fallbackResult !== null && $fallbackResult->canReceiveInvoices()) {
-                    $totalDuration = round((microtime(true) - $startTime) * 1000, 2);
                     $peppolId = $this->buildPeppolId(
                         EasCode::vatSchemeForCountry($company->country),
                         $vatNumber,
                         $fallbackResult->meta
                     );
 
-                    $this->log('info', 'API: Company found on PEPPOL network via VAT fallback', [
+                    $this->log('info', 'API: Company found via VAT fallback', [
                         'vat_number' => $vatNumber,
                         'peppol_id' => $peppolId,
-                        'duration_ms' => $totalDuration,
                     ]);
 
                     return new Company(
@@ -156,6 +285,35 @@ class ScradaConnector implements PeppolConnector
                         taxNumber: $derivedTaxNumber,
                         taxNumberScheme: EasCode::vatSchemeForCountry($company->country),
                         metadata: $fallbackResult->meta,
+                    );
+                }
+            }
+
+            // Step 3: If still not found and GLN provided, try GLN lookup
+            if (! $result->canReceiveInvoices() && $glnNumber !== null) {
+                $this->log('info', 'API: Primary lookup not found, trying GLN fallback', [
+                    'vat_number' => $vatNumber,
+                    'gln_number' => $glnNumber,
+                ]);
+
+                $glnResult = $this->doGlnLookup($glnNumber, $company->country);
+
+                if ($glnResult !== null && $glnResult->canReceiveInvoices()) {
+                    $peppolId = $this->buildPeppolId(EasCode::GLN, $glnNumber, $glnResult->meta);
+
+                    $this->log('info', 'API: Company found via GLN fallback', [
+                        'vat_number' => $vatNumber,
+                        'gln_number' => $glnNumber,
+                        'peppol_id' => $peppolId,
+                    ]);
+
+                    return new Company(
+                        vatNumber: $vatNumber,
+                        peppolId: $peppolId,
+                        country: $company->country,
+                        taxNumber: $derivedTaxNumber,
+                        taxNumberScheme: EasCode::GLN,
+                        metadata: $glnResult->meta,
                     );
                 }
             }
@@ -319,9 +477,14 @@ class ScradaConnector implements PeppolConnector
      * Build a Customer object for PEPPOL lookup.
      *
      * Uses tax number lookup for BE/NL/FR when applicable, falls back to VAT number.
+     * GLN can be included for additional lookup capability.
      */
-    private function buildLookupCustomer(string $identifier, ?EasCode $scheme, string $vatNumber): Customer
-    {
+    private function buildLookupCustomer(
+        string $identifier,
+        ?EasCode $scheme,
+        string $vatNumber,
+        ?string $glnNumber = null
+    ): Customer {
         $countryCode = $scheme?->countryCode() ?? $this->guessCountryFromVat($vatNumber) ?? 'BE';
         $taxNumberType = $this->mapEasSchemeToScradaTaxType($scheme);
 
@@ -341,7 +504,56 @@ class ScradaConnector implements PeppolConnector
             taxNumberType: $taxNumberType,
             taxNumber: $taxNumberType !== null ? $identifier : null,
             vatNumber: $taxNumberType === null ? $vatNumber : null,
+            glnNumber: $glnNumber,
         );
+    }
+
+    /**
+     * Perform raw GLN lookup API call.
+     *
+     * Returns the raw Scrada API response object.
+     * Used internally for GLN fallback lookups.
+     */
+    private function doGlnLookup(string $glnNumber, ?string $country): ?object
+    {
+        $effectiveCountry = $country ?? 'BE';
+        $peppolID = EasCode::GLN->value . ":{$glnNumber}";
+
+        $customer = new Customer(
+            name: 'Lookup',
+            address: new Address(
+                street: '-',
+                streetNumber: '-',
+                city: '-',
+                zipCode: '-',
+                countryCode: $effectiveCountry,
+            ),
+            peppolID: $peppolID,
+            glnNumber: $glnNumber,
+        );
+
+        $this->log('debug', 'API: Scrada lookupParty GLN', [
+            'customer' => $customer->toArray(),
+        ]);
+
+        try {
+            $result = $this->client->peppol()->lookupParty($customer);
+
+            $this->log('debug', 'API: Scrada lookupParty GLN response', [
+                'gln_number' => $glnNumber,
+                'can_receive_invoices' => $result->canReceiveInvoices(),
+                'meta' => $result->meta ?? [],
+            ]);
+
+            return $result;
+        } catch (Exception $e) {
+            $this->log('warning', 'API: GLN lookup failed', [
+                'gln_number' => $glnNumber,
+                'error' => $e->getMessage(),
+            ]);
+
+            return null;
+        }
     }
 
     /**
@@ -682,6 +894,7 @@ class ScradaConnector implements PeppolConnector
             phone: $customerData['phone'] ?? null,
             email: $customerData['email'] ?? '',
             vatNumber: $customerData['vatNumber'] ?? $invoice->recipientVatNumber,
+            glnNumber: $customerData['glnNumber'] ?? null,
         );
 
         // Debug: log raw line items from transformer
@@ -787,12 +1000,16 @@ class ScradaConnector implements PeppolConnector
             purchaseOrderReference: $invoice->purchaseOrderReference,
             projectReference: $invoice->projectReference,
             salesOrderReference: $invoice->salesOrderReference,
-            deliveryDate: $deliveryData['date'] ?? null,
-            deliveryStreet: $deliveryData['street'] ?? null,
-            deliveryStreetNumber: $deliveryData['streetNumber'] ?? null,
-            deliveryCity: $deliveryData['city'] ?? null,
-            deliveryZipCode: $deliveryData['zipCode'] ?? null,
-            deliveryCountryCode: $deliveryData['countryCode'] ?? null,
+            delivery: Delivery::fromFlatFields(
+                date: $deliveryData['date'] ?? null,
+                street: $deliveryData['street'] ?? null,
+                streetNumber: $deliveryData['streetNumber'] ?? null,
+                city: $deliveryData['city'] ?? null,
+                zipCode: $deliveryData['zipCode'] ?? null,
+                countryCode: $deliveryData['countryCode'] ?? null,
+                identifierType: $deliveryData['identifierType'] ?? null,
+                identifier: $deliveryData['identifier'] ?? null,
+            ),
         );
     }
 
