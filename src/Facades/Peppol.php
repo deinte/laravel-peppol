@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Deinte\Peppol\Facades;
 
+use Deinte\Peppol\Data\Company;
 use Deinte\Peppol\Data\Invoice;
 use Deinte\Peppol\Data\InvoiceStatus;
 use Deinte\Peppol\Models\PeppolCompany;
@@ -13,6 +14,7 @@ use Illuminate\Support\Facades\Facade;
 
 /**
  * @method static PeppolCompany|null lookupCompany(string $vatNumber, bool $forceRefresh = false, ?string $taxNumber = null, ?string $country = null)
+ * @method static Company|null lookupCompanyByGln(string $glnNumber, string $country)
  * @method static PeppolInvoice scheduleInvoice(Model $invoice, string $recipientVatNumber, ?\DateTimeInterface $dispatchAt = null, ?bool $skipDelivery = null)
  * @method static InvoiceStatus dispatchInvoice(PeppolInvoice $peppolInvoice, Invoice $invoiceData)
  * @method static InvoiceStatus getInvoiceStatus(PeppolInvoice $peppolInvoice)

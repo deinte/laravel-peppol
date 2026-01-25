@@ -99,6 +99,38 @@ class PeppolService
     }
 
     /**
+     * Look up a company on the PEPPOL network by GLN (Global Location Number).
+     *
+     * @param  string  $glnNumber  The 13-digit GLN to lookup
+     * @param  string  $country  ISO 3166-1 alpha-2 country code (e.g., 'NL', 'BE')
+     */
+    public function lookupCompanyByGln(string $glnNumber, string $country): ?Company
+    {
+        $this->log('info', 'Looking up company by GLN', [
+            'gln_number' => $glnNumber,
+            'country' => $country,
+        ]);
+
+        $company = $this->connector->lookupCompanyByGln($glnNumber, $country);
+
+        if (! $company) {
+            $this->log('warning', 'GLN lookup returned null', [
+                'gln_number' => $glnNumber,
+            ]);
+
+            return null;
+        }
+
+        $this->log('info', 'GLN lookup successful', [
+            'gln_number' => $glnNumber,
+            'peppol_id' => $company->peppolId,
+            'on_peppol' => $company->peppolId !== null,
+        ]);
+
+        return $company;
+    }
+
+    /**
      * Schedule an invoice for PEPPOL dispatch.
      *
      * When delay_days is 0, the invoice is dispatched immediately via the queue.
