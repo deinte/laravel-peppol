@@ -890,6 +890,7 @@ class ScradaConnector implements PeppolConnector
         $customer = new Customer(
             name: $customerData['name'] ?? '',
             address: Address::fromArray($customerData['address'] ?? []),
+            peppolID: $customerData['peppolID'] ?? $invoice->recipientPeppolId,
             code: $customerData['code'] ?? $invoice->recipientVatNumber,
             phone: $customerData['phone'] ?? null,
             email: $customerData['email'] ?? '',
