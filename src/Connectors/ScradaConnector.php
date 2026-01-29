@@ -717,6 +717,9 @@ class ScradaConnector implements PeppolConnector
             // Map Scrada SendStatusResponse to PeppolStatus
             $peppolStatus = $this->mapSendStatusResponseToPeppolStatus($status);
 
+            // Use error message from response or status label for failed statuses
+            $errorMessage = $status->errorMessage ?? ($peppolStatus->isFailed() ? $status->status?->label() : null);
+
             // Check if recipient is not on PEPPOL (stored but not delivered via PEPPOL)
             // NONE means no send configuration in Scrada - typically because recipient not on PEPPOL
             $recipientNotOnPeppol = in_array($status->status, [
@@ -727,8 +730,21 @@ class ScradaConnector implements PeppolConnector
                 SendStatus::NONE,
             ], true);
 
-            // Use error message from response or status label for failed statuses
-            $errorMessage = $status->errorMessage ?? ($peppolStatus->isFailed() ? $status->status?->label() : null);
+            // Also detect "not on PEPPOL" from error message patterns
+            // e.g., "The receiver does not support any document type that Scrada can use"
+            if (! $recipientNotOnPeppol && $errorMessage !== null) {
+                $notOnPeppolPatterns = [
+                    'does not support any document type',
+                    'receiver does not support',
+                    'not on peppol',
+                ];
+                foreach ($notOnPeppolPatterns as $pattern) {
+                    if (stripos($errorMessage, $pattern) !== false) {
+                        $recipientNotOnPeppol = true;
+                        break;
+                    }
+                }
+            }
 
             $this->log('debug', 'API: Invoice status retrieved', [
                 'invoice_id' => $invoiceId,
