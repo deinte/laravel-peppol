@@ -159,6 +159,9 @@ class DispatchPeppolInvoice implements ShouldQueue
                 'exception_class' => $e::class,
             ]);
 
+            // Report to Flare (single error report with full exception stack trace)
+            report($e);
+
             // Fire failure event
             if (config('peppol.events.invoice_failed', true)) {
                 event(new InvoiceFailed($peppolInvoice, $e->getMessage()));
