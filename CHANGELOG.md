@@ -2,6 +2,13 @@
 
 All notable changes to `laravel-peppol` will be documented in this file.
 
+## [0.0.20] - 2026-01-29
+
+### Fixed
+- Detect "recipient not on PEPPOL" from error message patterns, not just status codes
+- Invoices with errors like "The receiver does not support any document type" now correctly get `STORED` state instead of `FAILED`
+- The invoice is successfully stored in Scrada, just not deliverable via PEPPOL
+
 ## [0.0.5] - 2025-12-22
 
 ### Removed
