@@ -1245,9 +1245,6 @@ class ScradaConnector implements PeppolConnector
 
     /**
      * Create an invoice line with proper VAT type resolution.
-     *
-     * VAT country can be explicitly set per line item (e.g., for event invoices
-     * where EU Article 55 requires VAT based on service location, not customer location).
      */
     private function createInvoiceLine(
         array $lineItem,
@@ -1260,20 +1257,21 @@ class ScradaConnector implements PeppolConnector
         $totalExclVat = isset($lineItem['totalExclVat']) ? (float) $lineItem['totalExclVat'] : null;
         $vatAmount = isset($lineItem['vatAmount']) ? (float) $lineItem['vatAmount'] : null;
 
-        // VAT country determines which country's VAT rules apply
-        // For event/catering services, this is the event location (EU Article 55)
-        $vatCountry = isset($lineItem['vatCountry'])
+        // Where is the service performed? (event location or customer country for non-events)
+        $serviceCountry = isset($lineItem['vatCountry'])
             ? strtoupper($lineItem['vatCountry'])
             : $customerCountry;
 
-        $vatInfo = $this->resolveVatInfo($vatCountry, $vatPercentage, $senderCountry, $invoiceNumber);
+        $isDomestic = $serviceCountry === $senderCountry;
+        $vatTypeID = $this->resolveVatTypeId($senderCountry, $vatPercentage, $isDomestic);
 
         $this->log('debug', 'API: Creating InvoiceLine', [
             'invoice_number' => $invoiceNumber,
             'line_number' => $lineNumber,
+            'service_country' => $serviceCountry,
+            'is_domestic' => $isDomestic,
             'vat_percentage' => $vatPercentage,
-            'vat_country' => $vatCountry,
-            'vat_type_id' => $vatInfo['vatTypeID'],
+            'vat_type_id' => $vatTypeID,
         ]);
 
         return new InvoiceLine(
@@ -1281,67 +1279,36 @@ class ScradaConnector implements PeppolConnector
             quantity: (float) ($lineItem['quantity'] ?? 1),
             unitPrice: (float) ($lineItem['unitPrice'] ?? 0),
             vatPercentage: $vatPercentage,
-            vatType: $vatInfo['vatType'],
+            vatType: $isDomestic
+                ? VatType::fromPercentageDomestic($vatPercentage)
+                : VatType::fromPercentageCrossBorderB2B($vatPercentage),
             lineNumber: $lineNumber,
             totalExclVat: $totalExclVat,
             vatAmount: $vatAmount,
-            vatTypeID: $vatInfo['vatTypeID'],
+            vatTypeID: $vatTypeID,
         );
     }
 
     /**
-     * Resolve VAT type and VAT type ID for a given country and percentage.
+     * Resolve the Scrada VAT type UUID.
      *
-     * @return array{vatType: VatType, vatTypeID: string|null}
+     * Always uses sender's country (BE) for vatTypeID:
+     * - Domestic (service in BE): BE rate (21%, 6%, 12%, 0%)
+     * - Cross-border with 0%: BE NA (reverse charge)
      */
-    private function resolveVatInfo(
-        string $vatCountry,
-        float $vatPercentage,
-        string $senderCountry,
-        string $invoiceNumber
-    ): array {
-        $isDomestic = $vatCountry === $senderCountry;
-
-        $vatType = $isDomestic
-            ? VatType::fromPercentageDomestic($vatPercentage)
-            : VatType::fromPercentageCrossBorderB2B($vatPercentage);
-
-        $vatTypeID = $this->resolveVatTypeId($vatCountry, $vatPercentage, $isDomestic, $invoiceNumber);
-
-        return [
-            'vatType' => $vatType,
-            'vatTypeID' => $vatTypeID,
-        ];
-    }
-
-    /**
-     * Resolve the Scrada VAT type UUID for a country and percentage.
-     */
-    private function resolveVatTypeId(
-        string $vatCountry,
-        float $vatPercentage,
-        bool $isDomestic,
-        string $invoiceNumber
-    ): ?string {
-        if (! VatTypeId::isCountrySupported($vatCountry)) {
+    private function resolveVatTypeId(string $senderCountry, float $vatPercentage, bool $isDomestic): ?string
+    {
+        if (! VatTypeId::isCountrySupported($senderCountry)) {
             return null;
         }
 
         try {
-            // Cross-border B2B with 0% VAT uses "not applicable"
             if (! $isDomestic && $vatPercentage === 0.0) {
-                return VatTypeId::notApplicable($vatCountry)->getValue();
+                return VatTypeId::notApplicable($senderCountry)->getValue();
             }
 
-            return VatTypeId::fromCountryAndPercentage($vatCountry, $vatPercentage)->getValue();
-        } catch (InvalidArgumentException $e) {
-            $this->log('warning', 'API: Could not determine vatTypeID', [
-                'invoice_number' => $invoiceNumber,
-                'vat_country' => $vatCountry,
-                'vat_percentage' => $vatPercentage,
-                'error' => $e->getMessage(),
-            ]);
-
+            return VatTypeId::fromCountryAndPercentage($senderCountry, $vatPercentage)->getValue();
+        } catch (InvalidArgumentException) {
             return null;
         }
     }
