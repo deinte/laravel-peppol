@@ -20,6 +20,7 @@ class InvoiceStatus
         public readonly ?string $message = null,
         public readonly ?array $metadata = null,
         public readonly bool $recipientNotOnPeppol = false,
+        public readonly bool $connectorInternalError = false,
     ) {}
 
     public function toArray(): array

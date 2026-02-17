@@ -746,6 +746,12 @@ class ScradaConnector implements PeppolConnector
                 }
             }
 
+            // Detect connector internal errors - invoice is stored but delivery failed on Scrada's end
+            $connectorInternalError = false;
+            if ($errorMessage !== null && stripos($errorMessage, 'Internal error') !== false) {
+                $connectorInternalError = true;
+            }
+
             $this->log('debug', 'API: Invoice status retrieved', [
                 'invoice_id' => $invoiceId,
                 'scrada_status' => $status->status?->value,
@@ -753,6 +759,7 @@ class ScradaConnector implements PeppolConnector
                 'is_error' => $status->isError(),
                 'is_pending' => $status->isPending(),
                 'recipient_not_on_peppol' => $recipientNotOnPeppol,
+                'connector_internal_error' => $connectorInternalError,
                 'mapped_status' => $peppolStatus->value,
                 'error_message' => $errorMessage,
                 'duration_ms' => $duration,
@@ -765,6 +772,7 @@ class ScradaConnector implements PeppolConnector
                 metadata: $status->toArray(),
                 message: $errorMessage,
                 recipientNotOnPeppol: $recipientNotOnPeppol,
+                connectorInternalError: $connectorInternalError,
             );
         } catch (NotFoundException $e) {
             $duration = round((microtime(true) - $startTime) * 1000, 2);

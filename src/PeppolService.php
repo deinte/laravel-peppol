@@ -401,6 +401,16 @@ class PeppolService
             ]);
         }
 
+        // Check for connector internal errors - invoice is stored but delivery failed on connector's end
+        if ($status->connectorInternalError) {
+            $newState = PeppolState::STORED;
+
+            $this->log('info', 'Connector internal error - marking as stored (delivery is connector responsibility)', [
+                'peppol_invoice_id' => $peppolInvoice->id,
+                'message' => $status->message,
+            ]);
+        }
+
         // Provide meaningful message for polling state
         $message = $status->message;
         if ($message === null && $newState === PeppolState::POLLING) {
