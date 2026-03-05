@@ -1025,6 +1025,7 @@ class ScradaConnector implements PeppolConnector
             purchaseOrderReference: $invoice->purchaseOrderReference,
             projectReference: $invoice->projectReference,
             salesOrderReference: $invoice->salesOrderReference,
+            payableRoundingAmount: $invoice->payableRoundingAmount,
             delivery: Delivery::fromFlatFields(
                 date: $deliveryData['date'] ?? null,
                 street: $deliveryData['street'] ?? null,

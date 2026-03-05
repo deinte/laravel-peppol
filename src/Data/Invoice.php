@@ -39,6 +39,7 @@ class Invoice
         public readonly ?string $purchaseOrderReference = null,
         public readonly ?string $projectReference = null,
         public readonly ?string $salesOrderReference = null,
+        public readonly ?float $payableRoundingAmount = null,
         public readonly ?array $additionalData = null,
     ) {}
 
@@ -67,6 +68,7 @@ class Invoice
             'purchase_order_reference' => $this->purchaseOrderReference,
             'project_reference' => $this->projectReference,
             'sales_order_reference' => $this->salesOrderReference,
+            'payable_rounding_amount' => $this->payableRoundingAmount,
             'additional_data' => $this->additionalData,
         ];
     }
