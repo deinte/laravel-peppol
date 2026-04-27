@@ -2,7 +2,7 @@
 
 All notable changes to `laravel-peppol` will be documented in this file.
 
-## [Unreleased]
+## [0.0.25] - 2026-04-27
 
 ### Changed
 - `ScradaConnector::transformInvoiceToScradaFormat()` now always derives header totals (`totalExclVat`, `totalVat`, `totalInclVat`) from the line item sums and never rewrites them to match `$invoice->totalAmount`. The previous override desynced the header VAT from the sum of line `vatAmount`s and triggered Scrada error 110424 ("Invoice total VAT X doesn't match with total VAT of the lines"). Callers that need to declare a rounding gap between line totals and the invoice total must use `payableRoundingAmount`.
