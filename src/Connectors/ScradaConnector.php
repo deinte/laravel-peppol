@@ -957,33 +957,17 @@ class ScradaConnector implements PeppolConnector
         $totalExclVat = round($totalExclVat, 2);
         $totalVat = round($totalVat, 2);
 
+        $totalInclVat = round($totalExclVat + $totalVat, 2);
+
         $this->log('debug', 'API: Calculated totals from line items', [
             'invoice_number' => $invoice->invoiceNumber,
             'line_items_count' => count($invoice->lineItems),
             'total_excl_vat' => $totalExclVat,
             'total_vat' => $totalVat,
-            'calculated_total_incl_vat' => round($totalExclVat + $totalVat, 2),
+            'total_incl_vat' => $totalInclVat,
             'invoice_total_amount' => round($invoice->totalAmount, 2),
+            'payable_rounding_amount' => $invoice->payableRoundingAmount,
         ]);
-
-        // Ensure totalInclVat = totalExclVat + totalVat (Scrada validates this)
-        // Use the invoice's total amount if it matches, otherwise calculate from parts
-        $calculatedTotalInclVat = round($totalExclVat + $totalVat, 2);
-        $invoiceTotalAmount = round($invoice->totalAmount, 2);
-
-        // If there's a mismatch, prefer the calculated values for consistency
-        if (abs($invoiceTotalAmount - $calculatedTotalInclVat) > 0.01) {
-            $this->log('warning', 'Total mismatch detected, using calculated values', [
-                'invoice_total' => $invoiceTotalAmount,
-                'calculated_total' => $calculatedTotalInclVat,
-                'total_excl_vat' => $totalExclVat,
-                'total_vat' => $totalVat,
-            ]);
-            // Adjust totalVat to make the equation work with the invoice total
-            $totalVat = round($invoiceTotalAmount - $totalExclVat, 2);
-        }
-
-        $totalInclVat = round($totalExclVat + $totalVat, 2);
 
         // Debug: Log the InvoiceLine objects to verify vatAmount is set
         foreach ($lines as $idx => $line) {
