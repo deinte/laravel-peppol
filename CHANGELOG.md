@@ -2,6 +2,11 @@
 
 All notable changes to `laravel-peppol` will be documented in this file.
 
+## [0.0.26] - 2026-06-02
+
+### Changed
+- Allow `deinte/scrada-php-sdk ^0.0.9`, which adds seller `iban`/`bic` support on invoice payment methods. Payment method data passes through `InvoicePaymentMethod::fromArray()`, so the new fields require no code change here.
+
 ## [0.0.25] - 2026-04-27
 
 ### Changed
