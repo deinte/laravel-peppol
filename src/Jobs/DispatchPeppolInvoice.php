@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Deinte\Peppol\Jobs;
 
 use Deinte\Peppol\Contracts\InvoiceTransformer;
+use Deinte\Peppol\Enums\PeppolState;
 use Deinte\Peppol\Events\InvoiceDispatched;
 use Deinte\Peppol\Events\InvoiceFailed;
 use Deinte\Peppol\Models\PeppolInvoice;
@@ -146,8 +147,13 @@ class DispatchPeppolInvoice implements ShouldQueue
                 'state' => $peppolInvoice->fresh()->state->value,
             ]);
         } catch (Exception $e) {
-            // State transition (send_failed or failed) is handled by PeppolService
+            // PeppolService transitions the state to send_failed/failed once the
+            // dispatch phase starts. If the exception is thrown earlier (e.g. the
+            // transformer fails) the state is left untouched, so we must record the
+            // failure ourselves — otherwise the invoice stays SCHEDULED/SENDING and
+            // is silently retried forever (or never), never reaching the failed list.
             $peppolInvoice->refresh();
+            $this->ensureFailureRecorded($peppolInvoice, $e->getMessage());
 
             $this->log('error', 'Job failed', [
                 'peppol_invoice_id' => $this->peppolInvoiceId,
@@ -172,6 +178,30 @@ class DispatchPeppolInvoice implements ShouldQueue
         }
     }
 
+    /**
+     * Make sure a failed dispatch is reflected in the invoice state.
+     *
+     * Handles the cases where PeppolService never got to transition the state:
+     * - exception before dispatch started (state still SCHEDULED)
+     * - worker died/timed out mid-send (state stuck at SENDING)
+     *
+     * Without this the invoice never shows up in the "failed" list.
+     */
+    private function ensureFailureRecorded(PeppolInvoice $peppolInvoice, string $errorMessage): void
+    {
+        if (! in_array($peppolInvoice->state, [PeppolState::SCHEDULED, PeppolState::SENDING], true)) {
+            return;
+        }
+
+        // A SCHEDULED invoice never reached markAsSending(), so advance the
+        // attempt counter to mirror this try and let it eventually reach FAILED.
+        if ($peppolInvoice->state === PeppolState::SCHEDULED) {
+            $peppolInvoice->update(['dispatch_attempts' => $peppolInvoice->dispatch_attempts + 1]);
+        }
+
+        $peppolInvoice->markAsSendFailed($errorMessage);
+    }
+
     public function failed(?Throwable $exception): void
     {
         $this->log('error', 'Job permanently failed', [
@@ -179,5 +209,17 @@ class DispatchPeppolInvoice implements ShouldQueue
             'error' => $exception?->getMessage(),
             'exception_class' => $exception ? $exception::class : null,
         ]);
+
+        // The job was killed/timed out before handle()'s catch could run (e.g.
+        // Scrada hanging past the job timeout). Recover the state so the invoice
+        // is retried or surfaced as failed instead of being stuck at SENDING.
+        $peppolInvoice = PeppolInvoice::find($this->peppolInvoiceId);
+
+        if ($peppolInvoice) {
+            $this->ensureFailureRecorded(
+                $peppolInvoice,
+                $exception?->getMessage() ?? 'Job terminated before completion (timeout or worker shutdown)'
+            );
+        }
     }
 }

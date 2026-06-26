@@ -1,0 +1,109 @@
+parameters:
+	ignoreErrors:
+		-
+			message: '#^Access to an undefined property Illuminate\\Database\\Eloquent\\Model\:\:\$created_at\.$#'
+			identifier: property.notFound
+			count: 1
+			path: src/Commands/DebugPeppolInvoiceCommand.php
+
+		-
+			message: '#^Access to an undefined property Illuminate\\Database\\Eloquent\\Model\:\:\$from_state\.$#'
+			identifier: property.notFound
+			count: 1
+			path: src/Commands/DebugPeppolInvoiceCommand.php
+
+		-
+			message: '#^Access to an undefined property Illuminate\\Database\\Eloquent\\Model\:\:\$invoice_number_display\.$#'
+			identifier: property.notFound
+			count: 1
+			path: src/Commands/DebugPeppolInvoiceCommand.php
+
+		-
+			message: '#^Access to an undefined property Illuminate\\Database\\Eloquent\\Model\:\:\$to_state\.$#'
+			identifier: property.notFound
+			count: 1
+			path: src/Commands/DebugPeppolInvoiceCommand.php
+
+		-
+			message: '#^Call to an undefined method Illuminate\\Database\\Eloquent\\Model\:\:isOnPeppol\(\)\.$#'
+			identifier: method.notFound
+			count: 1
+			path: src/Commands/DebugPeppolInvoiceCommand.php
+
+		-
+			message: '#^Offset ''company_count'' on array\{healthy\: true, message\?\: string, error\?\: string\} in isset\(\) does not exist\.$#'
+			identifier: isset.offset
+			count: 1
+			path: src/Commands/PeppolHealthCommand.php
+
+		-
+			message: '#^Parameter \#1 \$invoice of method Deinte\\Peppol\\Commands\\PollPeppolStatusCommand\:\:outputDryRun\(\) expects Deinte\\Peppol\\Models\\PeppolInvoice, Illuminate\\Database\\Eloquent\\Model given\.$#'
+			identifier: argument.type
+			count: 1
+			path: src/Commands/PollPeppolStatusCommand.php
+
+		-
+			message: '#^Parameter \#1 \$invoice of method Deinte\\Peppol\\Commands\\PollPeppolStatusCommand\:\:pollInvoice\(\) expects Deinte\\Peppol\\Models\\PeppolInvoice, Illuminate\\Database\\Eloquent\\Model given\.$#'
+			identifier: argument.type
+			count: 1
+			path: src/Commands/PollPeppolStatusCommand.php
+
+		-
+			message: '#^Match arm comparison between Deinte\\ScradaSdk\\Enums\\SendStatus\:\:BLOCKED and Deinte\\ScradaSdk\\Enums\\SendStatus\:\:BLOCKED is always true\.$#'
+			identifier: match.alwaysTrue
+			count: 1
+			path: src/Connectors/ScradaConnector.php
+
+		-
+			message: '#^Method Deinte\\Peppol\\Connectors\\ScradaConnector\:\:lookupByGlnOnly\(\) never returns null so it can be removed from the return type\.$#'
+			identifier: return.unusedType
+			count: 1
+			path: src/Connectors/ScradaConnector.php
+
+		-
+			message: '#^Method Deinte\\Peppol\\Connectors\\ScradaConnector\:\:lookupByVatWithGlnFallback\(\) never returns null so it can be removed from the return type\.$#'
+			identifier: return.unusedType
+			count: 1
+			path: src/Connectors/ScradaConnector.php
+
+		-
+			message: '#^Property Deinte\\ScradaSdk\\Data\\PeppolLookupResult\:\:\$meta \(array\<string, mixed\>\) on left side of \?\? is not nullable\.$#'
+			identifier: nullCoalesce.property
+			count: 4
+			path: src/Connectors/ScradaConnector.php
+
+		-
+			message: '#^Access to an undefined property Illuminate\\Foundation\\Auth\\User\:\:\$email\.$#'
+			identifier: property.notFound
+			count: 3
+			path: src/Models/PeppolInvoice.php
+
+		-
+			message: '#^Using nullsafe property access "\?\-\>email" on left side of \?\? is unnecessary\. Use \-\> instead\.$#'
+			identifier: nullsafe.neverNull
+			count: 3
+			path: src/Models/PeppolInvoice.php
+
+		-
+			message: '#^Using nullsafe property access on non\-nullable type Deinte\\Peppol\\Enums\\PeppolState\. Use \-\> instead\.$#'
+			identifier: nullsafe.neverNull
+			count: 1
+			path: src/Models/PeppolInvoice.php
+
+		-
+			message: '#^Access to an undefined property Illuminate\\Foundation\\Auth\\User\:\:\$email\.$#'
+			identifier: property.notFound
+			count: 2
+			path: src/PeppolService.php
+
+		-
+			message: '#^Call to an undefined method Illuminate\\Database\\Eloquent\\Model\:\:isOnPeppol\(\)\.$#'
+			identifier: method.notFound
+			count: 1
+			path: src/PeppolService.php
+
+		-
+			message: '#^Using nullsafe property access "\?\-\>email" on left side of \?\? is unnecessary\. Use \-\> instead\.$#'
+			identifier: nullsafe.neverNull
+			count: 2
+			path: src/PeppolService.php

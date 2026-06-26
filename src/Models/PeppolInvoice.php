@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Deinte\Peppol\Models;
 
+use DateTimeInterface;
 use Deinte\Peppol\Enums\PeppolState;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
@@ -277,6 +278,60 @@ class PeppolInvoice extends Model
         );
     }
 
+    /**
+     * Manually exclude the invoice from PEPPOL.
+     *
+     * Used for invoices that should never be sent via PEPPOL (e.g. a recipient
+     * that cannot receive them). Allowed from any state except success states,
+     * so failed/rejected/scheduled invoices can all be cleaned out of the lists.
+     */
+    public function exclude(?string $reason = null, ?string $actor = null): void
+    {
+        if ($this->state->isSuccess()) {
+            throw new RuntimeException('Cannot exclude an invoice that was already delivered');
+        }
+
+        if ($this->state === PeppolState::EXCLUDED) {
+            return;
+        }
+
+        $this->transitionTo(
+            PeppolState::EXCLUDED,
+            $reason ?? 'Invoice excluded from PEPPOL',
+            null,
+            $actor ?? auth()->user()?->email ?? 'system'
+        );
+    }
+
+    /**
+     * Restore a previously excluded invoice back to the schedule.
+     */
+    public function restore(?DateTimeInterface $scheduledAt = null, ?string $actor = null): void
+    {
+        if ($this->state !== PeppolState::EXCLUDED) {
+            throw new RuntimeException('Only excluded invoices can be restored');
+        }
+
+        $fromState = $this->state;
+
+        $this->update([
+            'state' => PeppolState::SCHEDULED,
+            'scheduled_at' => $scheduledAt ?? now(),
+            'completed_at' => null,
+            'error_message' => null,
+            'error_details' => null,
+            'dispatch_attempts' => 0,
+            'next_retry_at' => null,
+        ]);
+
+        $this->logs()->create([
+            'from_state' => $fromState->value,
+            'to_state' => PeppolState::SCHEDULED->value,
+            'message' => 'Invoice restored to schedule',
+            'actor' => $actor ?? auth()->user()?->email ?? 'system',
+        ]);
+    }
+
     // =========================================================================
     // Query Scopes
     // =========================================================================
@@ -296,6 +351,23 @@ class PeppolInvoice extends Model
                 $q->whereNull('next_retry_at')
                     ->orWhere('next_retry_at', '<=', now());
             });
+    }
+
+    /**
+     * Invoices stuck in the SENDING state.
+     *
+     * A worker that died or timed out mid-send leaves the invoice at SENDING
+     * with no connector_invoice_id. It is then never retried (not pending) and
+     * never shows up as failed. This scope finds those so they can be recovered.
+     */
+    public function scopeStuckSending(Builder $query, ?int $minutes = null): Builder
+    {
+        $minutes ??= (int) config('peppol.dispatch.stuck_sending_minutes', 15);
+
+        return $query
+            ->where('state', PeppolState::SENDING)
+            ->whereNull('connector_invoice_id')
+            ->where('updated_at', '<=', now()->subMinutes($minutes));
     }
 
     /**

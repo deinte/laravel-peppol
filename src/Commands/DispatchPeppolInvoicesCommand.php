@@ -64,6 +64,10 @@ class DispatchPeppolInvoicesCommand extends Command
             'limit' => $limit,
         ]);
 
+        if (! $dryRun) {
+            $this->recoverStuckSending();
+        }
+
         // Use the readyToDispatch scope which handles state and timing
         $totalCount = PeppolInvoice::query()
             ->readyToDispatch()
@@ -113,6 +117,35 @@ class DispatchPeppolInvoicesCommand extends Command
         $this->outputSummary($stats, $dryRun);
 
         return $stats['errors'] > 0 ? self::FAILURE : self::SUCCESS;
+    }
+
+    /**
+     * Recover invoices stuck in the SENDING state.
+     *
+     * A worker that died/timed out mid-send (without firing the job's failed()
+     * hook) leaves the invoice at SENDING with no connector_invoice_id. Such
+     * invoices are never retried and never surface as failed. We push them
+     * through markAsSendFailed() so they either retry or land in the failed list.
+     */
+    protected function recoverStuckSending(): void
+    {
+        $stuck = PeppolInvoice::query()->stuckSending()->get();
+
+        if ($stuck->isEmpty()) {
+            return;
+        }
+
+        $this->warn("Recovering {$stuck->count()} invoice(s) stuck in 'sending'.");
+
+        foreach ($stuck as $invoice) {
+            $invoice->markAsSendFailed('Recovered from stuck "sending" state (worker timeout or shutdown)');
+
+            $this->log('warning', 'Recovered stuck sending invoice', [
+                'peppol_invoice_id' => $invoice->id,
+                'dispatch_attempts' => $invoice->dispatch_attempts,
+                'new_state' => $invoice->fresh()->state->value,
+            ]);
+        }
     }
 
     protected function dispatchInvoice(PeppolInvoice $invoice, array $stats): array

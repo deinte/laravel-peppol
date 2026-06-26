@@ -2,6 +2,18 @@
 
 All notable changes to `laravel-peppol` will be documented in this file.
 
+## [0.0.27] - 2026-06-26
+
+### Added
+- New `PeppolState::EXCLUDED` terminal state for invoices that should never be sent via PEPPOL. It is neither a success nor a failure, so excluded invoices stay out of the pending/scheduled/failed/completed views.
+- `PeppolInvoice::exclude()` and `PeppolInvoice::restore()` helpers to move invoices in and out of the excluded state (with state logging).
+- `PeppolInvoice::scopeStuckSending()` to find invoices stuck in `SENDING` (worker died/timed out, no `connector_invoice_id`) past `peppol.dispatch.stuck_sending_minutes` (default 15).
+
+### Fixed
+- `DispatchPeppolInvoice` now records a failure when an exception is thrown **before** the dispatch phase (e.g. the transformer fails). Previously the invoice stayed `SCHEDULED` and was silently re-dispatched forever, never reaching the failed list.
+- `DispatchPeppolInvoice::failed()` now recovers invoices left stuck at `SENDING` when the job is killed or times out, instead of only logging.
+- `DispatchPeppolInvoicesCommand` recovers stuck `SENDING` invoices at the start of every run so they retry or surface as failed.
+
 ## [0.0.26] - 2026-06-02
 
 ### Changed

@@ -73,6 +73,10 @@ return [
         // Progressive backoff delays in minutes between retry attempts
         'retry_delays' => [5, 15, 60],
 
+        // Minutes an invoice may sit in the SENDING state before it is treated
+        // as stuck (worker died/timed out) and recovered by the dispatch command.
+        'stuck_sending_minutes' => env('PEPPOL_STUCK_SENDING_MINUTES', 15),
+
         // Queue name for dispatch jobs
         'queue' => env('PEPPOL_DISPATCH_QUEUE', 'default'),
     ],

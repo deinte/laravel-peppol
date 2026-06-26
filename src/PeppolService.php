@@ -467,7 +467,7 @@ class PeppolService
             PeppolState::DELIVERED, PeppolState::STORED => Enums\PeppolStatus::DELIVERED_WITHOUT_CONFIRMATION,
             PeppolState::ACCEPTED => Enums\PeppolStatus::ACCEPTED,
             PeppolState::REJECTED => Enums\PeppolStatus::REJECTED,
-            PeppolState::FAILED, PeppolState::CANCELLED => Enums\PeppolStatus::FAILED_DELIVERY,
+            PeppolState::FAILED, PeppolState::CANCELLED, PeppolState::EXCLUDED => Enums\PeppolStatus::FAILED_DELIVERY,
         };
     }
 

@@ -81,6 +81,13 @@ enum PeppolState: string
     case STORED = 'stored';
 
     /**
+     * Manually excluded from PEPPOL: the invoice should never be sent via
+     * PEPPOL (e.g. a recipient that cannot receive it). Terminal, but not a
+     * failure — kept out of the pending/scheduled/failed/completed views.
+     */
+    case EXCLUDED = 'excluded';
+
+    /**
      * Can this invoice be retried for dispatch?
      */
     public function canRetryDispatch(): bool
@@ -111,6 +118,7 @@ enum PeppolState: string
             self::FAILED,
             self::CANCELLED,
             self::STORED,
+            self::EXCLUDED,
         ], true);
     }
 
@@ -192,6 +200,7 @@ enum PeppolState: string
             self::FAILED => 'Failed',
             self::CANCELLED => 'Cancelled',
             self::STORED => 'Stored',
+            self::EXCLUDED => 'Excluded',
         };
     }
 
@@ -201,14 +210,18 @@ enum PeppolState: string
     public function canTransitionTo(self $newState): bool
     {
         return match ($this) {
-            self::SCHEDULED => in_array($newState, [self::SENDING, self::CANCELLED], true),
+            self::SCHEDULED => in_array($newState, [self::SENDING, self::CANCELLED, self::EXCLUDED], true),
             self::SENDING => in_array($newState, [self::SENT, self::SEND_FAILED, self::STORED], true),
-            self::SEND_FAILED => in_array($newState, [self::SENDING, self::FAILED, self::CANCELLED], true),
+            self::SEND_FAILED => in_array($newState, [self::SENDING, self::FAILED, self::CANCELLED, self::EXCLUDED], true),
             self::SENT => in_array($newState, [self::POLLING, self::DELIVERED, self::ACCEPTED, self::REJECTED, self::FAILED, self::STORED], true),
             self::POLLING => in_array($newState, [self::DELIVERED, self::ACCEPTED, self::REJECTED, self::FAILED, self::STORED], true),
             self::DELIVERED => in_array($newState, [self::ACCEPTED, self::REJECTED], true),
+            // Failed/rejected invoices may be manually excluded so they leave the failed view.
+            self::FAILED, self::REJECTED => $newState === self::EXCLUDED,
+            // Excluded invoices may be restored to the schedule.
+            self::EXCLUDED => $newState === self::SCHEDULED,
             // Terminal states cannot transition
-            self::ACCEPTED, self::REJECTED, self::FAILED, self::CANCELLED, self::STORED => false,
+            self::ACCEPTED, self::CANCELLED, self::STORED => false,
         };
     }
 
@@ -311,6 +324,7 @@ enum PeppolState: string
             self::FAILED->value,
             self::CANCELLED->value,
             self::STORED->value,
+            self::EXCLUDED->value,
         ];
     }
 }
