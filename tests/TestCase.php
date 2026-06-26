@@ -21,6 +21,15 @@ class TestCase extends Orchestra
 
         parent::setUp();
 
+        // spatie/laravel-ray is auto-discovered by Testbench and listens to
+        // MessageLogged. Without ray's published config the Settings binding is
+        // unresolvable, which breaks any test that logs (e.g. ScradaConnector's
+        // constructor). Bind it explicitly with ray disabled so logging is safe.
+        $this->app->singleton(
+            \Spatie\Ray\Settings\Settings::class,
+            fn () => new \Spatie\Ray\Settings\Settings(['enable' => false])
+        );
+
         Factory::guessFactoryNamesUsing(
             fn (string $modelName) => 'Deinte\\Peppol\\Database\\Factories\\'.class_basename($modelName).'Factory'
         );
