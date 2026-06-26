@@ -8,59 +8,39 @@ return new class extends Migration
 {
     public function up(): void
     {
-        $indexes = collect(Schema::getConnection()->getDoctrineSchemaManager()->listTableIndexes('peppol_invoices'));
-
-        // Index for polling main query (scopeNeedsPolling)
-        if (! $indexes->has('idx_peppol_invoices_polling_main')) {
-            Schema::table('peppol_invoices', function (Blueprint $table) {
-                $table->index(
-                    ['status', 'dispatched_at', 'skip_peppol_delivery'],
-                    'idx_peppol_invoices_polling_main'
-                );
-            });
-        }
-
-        // Index for failed invoice retry logic
-        if (! $indexes->has('idx_peppol_invoices_polling_failed')) {
-            Schema::table('peppol_invoices', function (Blueprint $table) {
-                $table->index(
-                    ['status', 'poll_attempts', 'next_poll_at'],
-                    'idx_peppol_invoices_polling_failed'
-                );
-            });
-        }
-
-        // Index for dispatch ready query (scopeReadyToDispatch)
-        if (! $indexes->has('idx_peppol_invoices_dispatch_ready')) {
-            Schema::table('peppol_invoices', function (Blueprint $table) {
-                $table->index(
-                    ['status', 'dispatched_at', 'scheduled_dispatch_at'],
-                    'idx_peppol_invoices_dispatch_ready'
-                );
-            });
-        }
+        // Add each index, ignoring "already exists". Avoids getDoctrineSchemaManager()
+        // which was removed in Laravel 11+ and is unavailable on SQLite.
+        $this->addIndex(['status', 'dispatched_at', 'skip_peppol_delivery'], 'idx_peppol_invoices_polling_main');
+        $this->addIndex(['status', 'poll_attempts', 'next_poll_at'], 'idx_peppol_invoices_polling_failed');
+        $this->addIndex(['status', 'dispatched_at', 'scheduled_dispatch_at'], 'idx_peppol_invoices_dispatch_ready');
     }
 
     public function down(): void
     {
-        $indexes = collect(Schema::getConnection()->getDoctrineSchemaManager()->listTableIndexes('peppol_invoices'));
+        $this->dropIndexIfExists('idx_peppol_invoices_polling_main');
+        $this->dropIndexIfExists('idx_peppol_invoices_polling_failed');
+        $this->dropIndexIfExists('idx_peppol_invoices_dispatch_ready');
+    }
 
-        if ($indexes->has('idx_peppol_invoices_polling_main')) {
-            Schema::table('peppol_invoices', function (Blueprint $table) {
-                $table->dropIndex('idx_peppol_invoices_polling_main');
+    private function addIndex(array $columns, string $name): void
+    {
+        try {
+            Schema::table('peppol_invoices', function (Blueprint $table) use ($columns, $name) {
+                $table->index($columns, $name);
             });
+        } catch (\Throwable $e) {
+            // Index already exists (or a column is absent at this point) - skip.
         }
+    }
 
-        if ($indexes->has('idx_peppol_invoices_polling_failed')) {
-            Schema::table('peppol_invoices', function (Blueprint $table) {
-                $table->dropIndex('idx_peppol_invoices_polling_failed');
+    private function dropIndexIfExists(string $name): void
+    {
+        try {
+            Schema::table('peppol_invoices', function (Blueprint $table) use ($name) {
+                $table->dropIndex($name);
             });
-        }
-
-        if ($indexes->has('idx_peppol_invoices_dispatch_ready')) {
-            Schema::table('peppol_invoices', function (Blueprint $table) {
-                $table->dropIndex('idx_peppol_invoices_dispatch_ready');
-            });
+        } catch (\Throwable $e) {
+            // Index does not exist - nothing to do.
         }
     }
 };

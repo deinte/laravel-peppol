@@ -150,6 +150,10 @@ describe('Invoice DTO', function () {
                 'pdf_filename' => 'invoice.pdf',
                 'already_sent_to_customer' => true,
                 'payment_methods' => [],
+                'purchase_order_reference' => null,
+                'project_reference' => null,
+                'sales_order_reference' => null,
+                'payable_rounding_amount' => null,
                 'additional_data' => ['journal' => 'SALES'],
             ]);
         });

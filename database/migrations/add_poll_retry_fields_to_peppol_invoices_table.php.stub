@@ -20,24 +20,25 @@ return new class extends Migration
             });
         }
 
-        $indexExists = collect(Schema::getConnection()->getDoctrineSchemaManager()->listTableIndexes('peppol_invoices'))
-            ->has('peppol_invoices_next_poll_at_index');
-
-        if (! $indexExists) {
+        // Add the index, ignoring "already exists". Avoids getDoctrineSchemaManager()
+        // which was removed in Laravel 11+ and is unavailable on SQLite.
+        try {
             Schema::table('peppol_invoices', function (Blueprint $table) {
                 $table->index('next_poll_at');
             });
+        } catch (\Throwable $e) {
+            // Index already exists - nothing to do.
         }
     }
 
     public function down(): void
     {
-        $indexes = collect(Schema::getConnection()->getDoctrineSchemaManager()->listTableIndexes('peppol_invoices'));
-
-        if ($indexes->has('peppol_invoices_next_poll_at_index')) {
+        try {
             Schema::table('peppol_invoices', function (Blueprint $table) {
                 $table->dropIndex(['next_poll_at']);
             });
+        } catch (\Throwable $e) {
+            // Index does not exist - nothing to do.
         }
 
         Schema::table('peppol_invoices', function (Blueprint $table) {
