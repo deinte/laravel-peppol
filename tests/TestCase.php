@@ -10,15 +10,8 @@ use Orchestra\Testbench\TestCase as Orchestra;
 
 class TestCase extends Orchestra
 {
-    /**
-     * The latest response (for older testbench compatibility).
-     */
-    protected static $latestResponse;
-
     protected function setUp(): void
     {
-        static::$latestResponse = null;
-
         parent::setUp();
 
         Factory::guessFactoryNamesUsing(
