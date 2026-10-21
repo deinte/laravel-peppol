@@ -2,6 +2,16 @@
 
 All notable changes to `laravel-peppol` will be documented in this file.
 
+## [1.0.0] - 2026-10-21
+
+### Changed
+- **BREAKING**: Requires PHP 8.5 (8.3 and 8.4 dropped).
+- **BREAKING**: Requires Laravel 12 or 13 (10 and 11 dropped). Laravel 13 is newly supported.
+- **BREAKING**: Requires `deinte/scrada-php-sdk ^1.0`, which runs on Saloon 4. Saloon 3 is affected by advisories (AccessTokenAuthenticator deserialization, base-URL override SSRF, fixture path traversal) that are only fixed in Saloon 4. Apps that also use Saloon directly must move to Saloon 4 (and `saloonphp/laravel-plugin ^4`).
+- Dev tooling moved to Pest 4, PHPUnit 12 and Testbench 10/11.
+
+No changes to the package's own API, config, migrations or events since 0.0.27.
+
 ## [0.0.27] - 2026-06-26
 
 ### Added
