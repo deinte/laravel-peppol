@@ -21,8 +21,9 @@ A Laravel package for sending electronic invoices via the Peppol network.
 
 ## Requirements
 
-- PHP 8.3+
-- Laravel 10, 11, or 12
+- PHP 8.5
+- Laravel 12 or 13
+- `deinte/scrada-php-sdk` 1.x (Saloon 4)
 
 ## Installation
 
