@@ -2,6 +2,14 @@
 
 All notable changes to `laravel-peppol` will be documented in this file.
 
+## [1.1.0] - 2026-11-03
+
+### Added
+- `Invoice::$buyerReference`: passed to Scrada as `buyerReference`, which lands in `<cbc:BuyerReference>` of the Peppol UBL invoice.
+
+### Changed
+- Requires `deinte/scrada-php-sdk ^1.1` (first release with `buyerReference`).
+
 ## [1.0.0] - 2026-10-21
 
 ### Changed
