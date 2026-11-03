@@ -41,6 +41,7 @@ class Invoice
         public readonly ?string $salesOrderReference = null,
         public readonly ?float $payableRoundingAmount = null,
         public readonly ?array $additionalData = null,
+        public readonly ?string $buyerReference = null,
     ) {}
 
     public function hasPdf(): bool
@@ -65,6 +66,7 @@ class Invoice
             'pdf_filename' => $this->pdfFilename,
             'already_sent_to_customer' => $this->alreadySentToCustomer,
             'payment_methods' => $this->paymentMethods,
+            'buyer_reference' => $this->buyerReference,
             'purchase_order_reference' => $this->purchaseOrderReference,
             'project_reference' => $this->projectReference,
             'sales_order_reference' => $this->salesOrderReference,

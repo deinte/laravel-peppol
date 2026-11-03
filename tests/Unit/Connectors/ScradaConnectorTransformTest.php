@@ -54,6 +54,8 @@ function buildPeppolInvoice(array $overrides = []): Invoice
             ],
         ],
         'payableRoundingAmount' => null,
+        'buyerReference' => null,
+        'purchaseOrderReference' => null,
     ];
 
     $merged = array_merge($defaults, $overrides);
@@ -69,6 +71,8 @@ function buildPeppolInvoice(array $overrides = []): Invoice
         currency: 'EUR',
         lineItems: $merged['lineItems'],
         payableRoundingAmount: $merged['payableRoundingAmount'],
+        purchaseOrderReference: $merged['purchaseOrderReference'],
+        buyerReference: $merged['buyerReference'],
         additionalData: [
             'customer' => [
                 'name' => 'Test BV',
@@ -95,6 +99,24 @@ function buildScradaConnector(): ScradaConnector
 }
 
 describe('ScradaConnector::transformInvoiceToScradaFormat()', function () {
+    it('passes the buyer reference to Scrada next to the purchase order reference', function () {
+        $invoice = buildPeppolInvoice([
+            'buyerReference' => 'PO-4512',
+            'purchaseOrderReference' => 'PO-4512',
+        ]);
+
+        $payload = buildScradaConnector()->transformInvoiceToScradaFormat($invoice)->toArray();
+
+        expect($payload['buyerReference'])->toBe('PO-4512');
+        expect($payload['purchaseOrderReference'])->toBe('PO-4512');
+    });
+
+    it('leaves the buyer reference out when the invoice has none', function () {
+        $payload = buildScradaConnector()->transformInvoiceToScradaFormat(buildPeppolInvoice())->toArray();
+
+        expect($payload)->not->toHaveKey('buyerReference');
+    });
+
     it('preserves header totalVat from line item sum when payableRoundingAmount is provided', function () {
         // Sum of line vatAmount = 315.035 + 315.035 = 630.07 (after round)
         // Invoice header total reflects 630.08 of VAT, so the 1-cent gap is
